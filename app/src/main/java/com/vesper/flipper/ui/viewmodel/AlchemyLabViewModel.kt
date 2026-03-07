@@ -288,7 +288,7 @@ class AlchemyLabViewModel @Inject constructor(
                                     rarity = rarity,
                                     metadata = metadata,
                                     size = entry.size,
-                                    capturedAt = entry.modified,
+                                    capturedAt = entry.modifiedTimestamp ?: System.currentTimeMillis(),
                                     tags = tags,
                                     previewData = preview
                                 )
