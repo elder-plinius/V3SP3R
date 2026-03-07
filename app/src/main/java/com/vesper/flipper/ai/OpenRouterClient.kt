@@ -547,6 +547,9 @@ class OpenRouterClient @Inject constructor(
     private fun parseCommandAction(value: String): CommandAction? {
         val normalized = value
             .trim()
+            // Convert camelCase to snake_case before lowercasing:
+            // "forgePayload" → "forge_Payload" → "forge_payload"
+            .replace(Regex("([a-z])([A-Z])"), "$1_$2")
             .lowercase()
             .replace(Regex("[^a-z0-9]+"), "_")
             .trim('_')

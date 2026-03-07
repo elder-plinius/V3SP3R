@@ -150,17 +150,26 @@ class AlchemyLabViewModel @Inject constructor(
             _currentBlueprint.value = blueprint.copy(status = ForgeStatus.FORGING)
 
             try {
+                // Ensure parent directory exists on the Flipper before writing
+                val dirPath = blueprint.flipperPath.substringBeforeLast("/")
+                if (dirPath.isNotEmpty() && dirPath != blueprint.flipperPath) {
+                    fileSystem.createDirectory(dirPath)
+                }
+
                 val result = fileSystem.writeFile(blueprint.flipperPath, blueprint.generatedCode)
+                // Re-read current blueprint to avoid overwriting edits made during deploy
+                val current = _currentBlueprint.value ?: blueprint
                 if (result.isSuccess) {
-                    _currentBlueprint.value = blueprint.copy(status = ForgeStatus.FORGED)
+                    _currentBlueprint.value = current.copy(status = ForgeStatus.FORGED)
                     _message.value = "Forged to ${blueprint.flipperPath}"
                     loadVault() // Refresh vault to show new loot
                 } else {
-                    _currentBlueprint.value = blueprint.copy(status = ForgeStatus.FAILED)
+                    _currentBlueprint.value = current.copy(status = ForgeStatus.FAILED)
                     _message.value = "Deploy failed: ${result.exceptionOrNull()?.message}"
                 }
             } catch (e: Exception) {
-                _currentBlueprint.value = blueprint.copy(status = ForgeStatus.FAILED)
+                val current = _currentBlueprint.value ?: blueprint
+                _currentBlueprint.value = current.copy(status = ForgeStatus.FAILED)
                 _message.value = "Deploy error: ${e.message}"
             }
         }

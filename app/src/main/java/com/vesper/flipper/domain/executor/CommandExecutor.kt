@@ -424,7 +424,11 @@ class CommandExecutor @Inject constructor(
             CommandAction.PUSH_ARTIFACT -> {
                 val path = command.args.path ?: throw IllegalArgumentException("Path required")
                 val data = command.args.artifactData ?: throw IllegalArgumentException("Artifact data required")
-                val bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
+                val bytes = try {
+                    android.util.Base64.decode(data, android.util.Base64.DEFAULT)
+                } catch (e: IllegalArgumentException) {
+                    throw IllegalArgumentException("Invalid Base64 artifact data: ${e.message}")
+                }
                 val bytesWritten = fileSystem.writeFileBytes(path, bytes).getOrThrow()
                 CommandResultData(bytesWritten = bytesWritten, message = "Artifact pushed: $path")
             }
