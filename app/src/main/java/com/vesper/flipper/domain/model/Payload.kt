@@ -3,13 +3,7 @@ package com.vesper.flipper.domain.model
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * Payload types supported by the Payload Lab
- */
-enum class PayloadType {
-    BADUSB,
-    EVIL_PORTAL
-}
+// PayloadType is defined in Alchemy.kt with full Flipper type support
 
 /**
  * BadUSB script payload

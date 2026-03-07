@@ -730,7 +730,7 @@ class CommandExecutor @Inject constructor(
         // Determine the payload type and generate appropriate file content
         val resolvedType = payloadType?.uppercase()?.let {
             runCatching { PayloadType.valueOf(it) }.getOrNull()
-        } ?: LootClassifier.detectPayloadType(prompt)
+        } ?: LootClassifier.detectPayloadType(prompt, "")
 
         val blueprint = generateForgeBlueprint(prompt, resolvedType)
 
@@ -911,13 +911,13 @@ class CommandExecutor @Inject constructor(
                     .filter { entry ->
                         if (filter.isNullOrEmpty()) true
                         else {
-                            val type = LootClassifier.detectPayloadType(entry.name)
+                            val type = LootClassifier.detectPayloadType(entry.name, dir)
                             type.name.equals(filter, ignoreCase = true)
                         }
                     }
                 entries.forEach { entry ->
-                    val type = LootClassifier.detectPayloadType(entry.name)
-                    val rarity = LootClassifier.classifyRarity(entry.name, entry.size, dir)
+                    val type = LootClassifier.detectPayloadType(entry.name, dir)
+                    val rarity = LootClassifier.classifyRarity(type, emptyMap())
                     allEntries.add("${entry.name} | type=${type.name.lowercase()} | rarity=${rarity.name.lowercase()} | size=${entry.size}B | path=${entry.path}")
                 }
             }
