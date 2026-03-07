@@ -458,6 +458,36 @@ class CommandExecutor @Inject constructor(
                     directDownloadUrl = command.args.content?.trim()?.takeIf { it.isNotEmpty() }
                 )
             }
+
+            CommandAction.FORGE_PAYLOAD -> {
+                val prompt = command.args.prompt
+                    ?: command.args.command
+                    ?: throw IllegalArgumentException("Forge prompt required")
+                val payloadType = command.args.payloadType
+                executeForgePayload(prompt, payloadType)
+            }
+
+            CommandAction.SEARCH_RESOURCES -> {
+                val query = command.args.command
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: ""
+                val resourceType = command.args.resourceType
+                executeSearchResources(query, resourceType)
+            }
+
+            CommandAction.LIST_VAULT -> {
+                val filter = command.args.filter
+                val path = command.args.path
+                executeListVault(filter, path)
+            }
+
+            CommandAction.RUN_RUNBOOK -> {
+                val runbookId = command.args.runbookId
+                    ?: command.args.command
+                    ?: throw IllegalArgumentException("Runbook ID required")
+                executeRunbook(runbookId)
+            }
         }
     }
 
@@ -691,6 +721,279 @@ class CommandExecutor @Inject constructor(
         val bytes: ByteArray,
         val contentType: String?
     )
+
+    // ═══════════════════════════════════════════════════════
+    // FORGE PAYLOAD
+    // ═══════════════════════════════════════════════════════
+
+    private fun executeForgePayload(prompt: String, payloadType: String?): CommandResultData {
+        // Determine the payload type and generate appropriate file content
+        val resolvedType = payloadType?.uppercase()?.let {
+            runCatching { PayloadType.valueOf(it) }.getOrNull()
+        } ?: LootClassifier.detectPayloadType(prompt)
+
+        val blueprint = generateForgeBlueprint(prompt, resolvedType)
+
+        return CommandResultData(
+            content = buildString {
+                appendLine("FORGE RESULT:")
+                appendLine("type=${resolvedType.name}")
+                appendLine("title=${blueprint.title}")
+                appendLine("filename=${blueprint.flipperPath}")
+                appendLine("rarity=${blueprint.rarity.name}")
+                appendLine("---PAYLOAD---")
+                append(blueprint.generatedCode)
+            },
+            message = "Forged ${resolvedType.displayName} payload: ${blueprint.title}"
+        )
+    }
+
+    private fun generateForgeBlueprint(prompt: String, type: PayloadType): ForgeBlueprint {
+        val promptLower = prompt.lowercase()
+        return when (type) {
+            PayloadType.BAD_USB -> ForgeBlueprint(
+                title = extractTitle(prompt, "BadUSB Script"),
+                description = prompt,
+                payloadType = type,
+                sections = listOf(
+                    BlueprintSection("Platform", "Windows"),
+                    BlueprintSection("Delay", "1000"),
+                    BlueprintSection("Description", prompt)
+                ),
+                generatedCode = buildString {
+                    appendLine("REM Auto-forged by Vesper AI")
+                    appendLine("REM Description: $prompt")
+                    appendLine("DELAY 2000")
+                    appendLine("REM TODO: AI will generate full script via chat")
+                },
+                flipperPath = "/ext/badusb/${sanitizeFilename(prompt)}.txt",
+                rarity = LootRarity.UNCOMMON
+            )
+            PayloadType.SUB_GHZ -> ForgeBlueprint(
+                title = extractTitle(prompt, "Sub-GHz Signal"),
+                description = prompt,
+                payloadType = type,
+                sections = listOf(
+                    BlueprintSection("Frequency", "433920000", fieldType = BlueprintFieldType.FREQUENCY),
+                    BlueprintSection("Preset", "FuriHalSubGhzPresetOok650Async"),
+                    BlueprintSection("Protocol", "RAW")
+                ),
+                generatedCode = buildString {
+                    appendLine("Filetype: Flipper SubGhz RAW File")
+                    appendLine("Version: 1")
+                    appendLine("Frequency: 433920000")
+                    appendLine("Preset: FuriHalSubGhzPresetOok650Async")
+                    appendLine("Protocol: RAW")
+                    appendLine("RAW_Data: 500 -500 500 -500")
+                },
+                flipperPath = "/ext/subghz/${sanitizeFilename(prompt)}.sub",
+                rarity = LootRarity.RARE
+            )
+            PayloadType.INFRARED -> ForgeBlueprint(
+                title = extractTitle(prompt, "IR Remote"),
+                description = prompt,
+                payloadType = type,
+                sections = listOf(
+                    BlueprintSection("Protocol", "NEC"),
+                    BlueprintSection("Address", "04 00 00 00", fieldType = BlueprintFieldType.HEX),
+                    BlueprintSection("Command", "08 00 00 00", fieldType = BlueprintFieldType.HEX)
+                ),
+                generatedCode = buildString {
+                    appendLine("Filetype: IR signals file")
+                    appendLine("Version: 1")
+                    appendLine("name: Power")
+                    appendLine("type: parsed")
+                    appendLine("protocol: NEC")
+                    appendLine("address: 04 00 00 00")
+                    appendLine("command: 08 00 00 00")
+                },
+                flipperPath = "/ext/infrared/${sanitizeFilename(prompt)}.ir",
+                rarity = LootRarity.UNCOMMON
+            )
+            PayloadType.NFC -> ForgeBlueprint(
+                title = extractTitle(prompt, "NFC Tag"),
+                description = prompt,
+                payloadType = type,
+                sections = listOf(
+                    BlueprintSection("Type", "NTAG215"),
+                    BlueprintSection("UID", "04 AB CD EF", fieldType = BlueprintFieldType.HEX)
+                ),
+                generatedCode = "Filetype: Flipper NFC device\nVersion: 4\nDevice type: NTAG215\nUID: 04 AB CD EF 12 34 80",
+                flipperPath = "/ext/nfc/${sanitizeFilename(prompt)}.nfc",
+                rarity = LootRarity.UNCOMMON
+            )
+            else -> ForgeBlueprint(
+                title = extractTitle(prompt, "Payload"),
+                description = prompt,
+                payloadType = type,
+                sections = listOf(BlueprintSection("Content", prompt)),
+                generatedCode = "# Forged by Vesper AI\n# $prompt",
+                flipperPath = "${type.flipperDir}/${sanitizeFilename(prompt)}${type.extension}",
+                rarity = LootRarity.COMMON
+            )
+        }
+    }
+
+    private fun extractTitle(prompt: String, fallback: String): String {
+        val words = prompt.split(" ").take(5).joinToString(" ")
+        return if (words.length > 40) words.take(37) + "..." else words.ifBlank { fallback }
+    }
+
+    private fun sanitizeFilename(input: String): String {
+        return input.lowercase()
+            .replace(Regex("[^a-z0-9]+"), "_")
+            .trim('_')
+            .take(32)
+            .ifBlank { "forged_payload" }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // SEARCH RESOURCES
+    // ═══════════════════════════════════════════════════════
+
+    private fun executeSearchResources(query: String, resourceType: String?): CommandResultData {
+        val type = resourceType?.let {
+            runCatching { FlipperResourceType.valueOf(it.uppercase()) }.getOrNull()
+        }
+
+        val repos = if (query.isNotEmpty()) {
+            FlipperResourceLibrary.search(query).let { results ->
+                if (type != null) results.filter { it.resourceType == type } else results
+            }
+        } else if (type != null) {
+            FlipperResourceLibrary.getByType(type)
+        } else {
+            FlipperResourceLibrary.repositories
+        }
+
+        if (repos.isEmpty()) {
+            return CommandResultData(
+                content = "No resource repositories found${if (query.isNotEmpty()) " for \"$query\"" else ""}${if (type != null) " (type: ${type.name})" else ""}.",
+                message = "Resource search returned 0 results"
+            )
+        }
+
+        val content = buildString {
+            appendLine("Flipper Resource Repositories${if (query.isNotEmpty()) " matching \"$query\"" else ""}:")
+            repos.take(15).forEachIndexed { index, repo ->
+                appendLine("${index + 1}. ${repo.name} by ${repo.author} (${repo.resourceType.name.lowercase()}, ${repo.stars} stars, ${repo.fileCount} files)")
+                appendLine("   ${repo.description}")
+                appendLine("   Tags: ${repo.tags.joinToString(", ")}")
+            }
+            if (repos.size > 15) {
+                append("... ${repos.size - 15} more result(s)")
+            }
+        }.trim()
+
+        return CommandResultData(
+            content = content,
+            message = "Resource search returned ${repos.size} result(s)"
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // LIST VAULT
+    // ═══════════════════════════════════════════════════════
+
+    private suspend fun executeListVault(filter: String?, path: String?): CommandResultData {
+        val scanDirs = if (path != null) {
+            listOf(path)
+        } else {
+            listOf("/ext/subghz", "/ext/infrared", "/ext/nfc", "/ext/lfrfid", "/ext/badusb", "/ext/ibutton")
+        }
+
+        val allEntries = mutableListOf<String>()
+        for (dir in scanDirs) {
+            val result = fileSystem.listDirectory(dir)
+            if (result.isSuccess) {
+                val entries = result.getOrNull().orEmpty()
+                    .filter { !it.isDirectory }
+                    .filter { entry ->
+                        if (filter.isNullOrEmpty()) true
+                        else {
+                            val type = LootClassifier.detectPayloadType(entry.name)
+                            type.name.equals(filter, ignoreCase = true)
+                        }
+                    }
+                entries.forEach { entry ->
+                    val type = LootClassifier.detectPayloadType(entry.name)
+                    val rarity = LootClassifier.classifyRarity(entry.name, entry.size, dir)
+                    allEntries.add("${entry.name} | type=${type.name.lowercase()} | rarity=${rarity.name.lowercase()} | size=${entry.size}B | path=${entry.path}")
+                }
+            }
+        }
+
+        val content = if (allEntries.isEmpty()) {
+            "Vault is empty${if (filter != null) " (filter: $filter)" else ""}. No files found on Flipper."
+        } else {
+            buildString {
+                appendLine("VAULT INVENTORY (${allEntries.size} items)${if (filter != null) " [filter: $filter]" else ""}:")
+                allEntries.forEachIndexed { index, entry ->
+                    appendLine("${index + 1}. $entry")
+                }
+            }.trim()
+        }
+
+        return CommandResultData(
+            content = content,
+            message = "Vault scan found ${allEntries.size} item(s)"
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // RUN RUNBOOK
+    // ═══════════════════════════════════════════════════════
+
+    private suspend fun executeRunbook(runbookId: String): CommandResultData {
+        val steps = when (runbookId.lowercase()) {
+            "link_health", "link_health_sweep" -> listOf(
+                "get_device_info" to "Checking device connectivity",
+                "get_storage_info" to "Checking storage health",
+                "storage info /ext" to "Checking SD card status"
+            )
+            "input_smoke_test" -> listOf(
+                "device_info" to "Reading device info",
+                "info" to "Checking system status"
+            )
+            "recover_scan", "recover_and_scan" -> listOf(
+                "storage list /ext" to "Listing root SD card",
+                "storage list /ext/subghz" to "Scanning Sub-GHz files",
+                "storage list /ext/infrared" to "Scanning IR files",
+                "storage list /ext/nfc" to "Scanning NFC files",
+                "storage list /ext/badusb" to "Scanning BadUSB scripts"
+            )
+            else -> throw IllegalArgumentException("Unknown runbook: $runbookId. Available: link_health, input_smoke_test, recover_scan")
+        }
+
+        val results = mutableListOf<String>()
+        for ((cmd, desc) in steps) {
+            results.add("[$desc]")
+            try {
+                if (cmd.startsWith("get_device_info")) {
+                    val info = fileSystem.getDeviceInfo().getOrThrow()
+                    results.add("  Device: ${info.name}, FW: ${info.firmwareVersion}, Battery: ${info.batteryLevel}%")
+                } else if (cmd.startsWith("get_storage_info") || cmd == "storage info /ext") {
+                    val info = fileSystem.getStorageInfo().getOrThrow()
+                    results.add("  Internal: ${info.internalFree}/${info.internalTotal} free, SD: ${if (info.hasSdCard) "present" else "missing"}")
+                } else if (cmd.startsWith("storage list")) {
+                    val path = cmd.removePrefix("storage list").trim()
+                    val entries = fileSystem.listDirectory(path).getOrThrow()
+                    results.add("  Found ${entries.size} entries in $path")
+                } else {
+                    val output = fileSystem.executeCli(cmd).getOrThrow()
+                    results.add("  $output")
+                }
+                results.add("  -> OK")
+            } catch (e: Exception) {
+                results.add("  -> FAILED: ${e.message}")
+            }
+        }
+
+        return CommandResultData(
+            content = results.joinToString("\n"),
+            message = "Runbook '$runbookId' completed (${steps.size} steps)"
+        )
+    }
 
     companion object {
         private const val USER_AGENT = "VesperFlipper/1.0 (Android)"

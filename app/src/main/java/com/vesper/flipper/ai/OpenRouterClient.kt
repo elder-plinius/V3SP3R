@@ -510,7 +510,12 @@ class OpenRouterClient @Inject constructor(
                 newName = stringArg("new_name", "newName"),
                 recursive = booleanArg("recursive", "is_recursive") ?: false,
                 artifactType = stringArg("artifact_type", "artifactType"),
-                artifactData = stringArg("artifact_data", "artifactData", "data_base64")
+                artifactData = stringArg("artifact_data", "artifactData", "data_base64"),
+                prompt = stringArg("prompt", "description", "forge_prompt"),
+                resourceType = stringArg("resource_type", "resourceType", "type"),
+                runbookId = stringArg("runbook_id", "runbookId", "runbook"),
+                payloadType = stringArg("payload_type", "payloadType"),
+                filter = stringArg("filter", "vault_filter")
             )
 
             val missingArgs = missingRequiredArgs(action, args)
@@ -562,6 +567,10 @@ class OpenRouterClient @Inject constructor(
             "push_artifact" -> CommandAction.PUSH_ARTIFACT
             "execute_cli", "execute_command", "run_command", "cli_command", "command", "send_command" ->
                 CommandAction.EXECUTE_CLI
+            "forge_payload", "forge", "craft_payload", "create_payload" -> CommandAction.FORGE_PAYLOAD
+            "search_resources", "browse_resources", "find_resources" -> CommandAction.SEARCH_RESOURCES
+            "list_vault", "vault", "scan_vault", "inventory" -> CommandAction.LIST_VAULT
+            "run_runbook", "runbook", "diagnostic" -> CommandAction.RUN_RUNBOOK
             else -> null
         }
     }
@@ -624,6 +633,22 @@ class OpenRouterClient @Inject constructor(
                     emptyList()
                 }
             }
+            CommandAction.FORGE_PAYLOAD -> {
+                if (args.prompt.isNullOrBlank() && args.command.isNullOrBlank()) {
+                    listOf("prompt")
+                } else {
+                    emptyList()
+                }
+            }
+            CommandAction.SEARCH_RESOURCES -> emptyList()  // query and resource_type are optional
+            CommandAction.LIST_VAULT -> emptyList()  // filter is optional
+            CommandAction.RUN_RUNBOOK -> {
+                if (args.runbookId.isNullOrBlank() && args.command.isNullOrBlank()) {
+                    listOf("runbook_id")
+                } else {
+                    emptyList()
+                }
+            }
         }
     }
 
@@ -653,6 +678,14 @@ class OpenRouterClient @Inject constructor(
                 """{"action":"push_artifact","args":{"path":"/ext/file.bin","artifact_data":"<base64>"}}"""
             CommandAction.EXECUTE_CLI ->
                 """{"action":"execute_cli","args":{"command":"storage list /ext"}}"""
+            CommandAction.FORGE_PAYLOAD ->
+                """{"action":"forge_payload","args":{"prompt":"Create a BadUSB script that opens notepad","payload_type":"BAD_USB"}}"""
+            CommandAction.SEARCH_RESOURCES ->
+                """{"action":"search_resources","args":{"command":"infrared remotes","resource_type":"IR_REMOTE"}}"""
+            CommandAction.LIST_VAULT ->
+                """{"action":"list_vault","args":{"filter":"SUB_GHZ"}}"""
+            CommandAction.RUN_RUNBOOK ->
+                """{"action":"run_runbook","args":{"runbook_id":"link_health"}}"""
         }
     }
 
@@ -834,7 +867,11 @@ class OpenRouterClient @Inject constructor(
             "search_faphub",
             "install_faphub_app",
             "push_artifact",
-            "execute_cli"
+            "execute_cli",
+            "forge_payload",
+            "search_resources",
+            "list_vault",
+            "run_runbook"
         )
 
         private val TOOL_USE_FALLBACK_MODELS = listOf(
@@ -853,7 +890,7 @@ class OpenRouterClient @Inject constructor(
             type = "function",
             function = OpenRouterToolFunction(
                 name = "execute_command",
-                description = "Execute a Flipper operation. Supports file ops, device/storage queries, FapHub search/install, artifact pushes, and execute_cli for direct Flipper CLI commands.",
+                description = "Execute a Flipper operation. Supports file ops, device/storage queries, FapHub search/install, artifact pushes, execute_cli for direct Flipper CLI commands, forge_payload for AI payload crafting, search_resources for browsing public Flipper resource repos, list_vault for scanning the user's payload inventory, and run_runbook for diagnostic sequences.",
                 parameters = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
@@ -873,7 +910,11 @@ class OpenRouterClient @Inject constructor(
                                 JsonPrimitive("search_faphub"),
                                 JsonPrimitive("install_faphub_app"),
                                 JsonPrimitive("push_artifact"),
-                                JsonPrimitive("execute_cli")
+                                JsonPrimitive("execute_cli"),
+                                JsonPrimitive("forge_payload"),
+                                JsonPrimitive("search_resources"),
+                                JsonPrimitive("list_vault"),
+                                JsonPrimitive("run_runbook")
                             )),
                             "description" to JsonPrimitive("The action to perform on the Flipper Zero")
                         )),
@@ -883,12 +924,12 @@ class OpenRouterClient @Inject constructor(
                                 "command" to JsonObject(mapOf(
                                     "type" to JsonPrimitive("string"),
                                     "description" to JsonPrimitive(
-                                        "Primary text argument. For execute_cli: raw CLI command; for search_faphub: query; for install_faphub_app: app id or app name."
+                                        "Primary text argument. For execute_cli: raw CLI command; for search_faphub/search_resources: query; for install_faphub_app: app id; for run_runbook: runbook id (link_health, input_smoke_test, recover_scan)."
                                     )
                                 )),
                                 "query" to JsonObject(mapOf(
                                     "type" to JsonPrimitive("string"),
-                                    "description" to JsonPrimitive("Alias for search_faphub query")
+                                    "description" to JsonPrimitive("Alias for search query")
                                 )),
                                 "app_id" to JsonObject(mapOf(
                                     "type" to JsonPrimitive("string"),
@@ -925,6 +966,26 @@ class OpenRouterClient @Inject constructor(
                                 "artifact_data" to JsonObject(mapOf(
                                     "type" to JsonPrimitive("string"),
                                     "description" to JsonPrimitive("Base64-encoded artifact data")
+                                )),
+                                "prompt" to JsonObject(mapOf(
+                                    "type" to JsonPrimitive("string"),
+                                    "description" to JsonPrimitive("Natural language prompt for forge_payload. Describe what you want to create.")
+                                )),
+                                "payload_type" to JsonObject(mapOf(
+                                    "type" to JsonPrimitive("string"),
+                                    "description" to JsonPrimitive("Payload type for forge_payload: SUB_GHZ, INFRARED, NFC, RFID, BAD_USB, IBUTTON")
+                                )),
+                                "resource_type" to JsonObject(mapOf(
+                                    "type" to JsonPrimitive("string"),
+                                    "description" to JsonPrimitive("Resource type filter for search_resources: IR_REMOTE, SUB_GHZ, BAD_USB, NFC_FILES, EVIL_PORTAL, MUSIC, ANIMATIONS, GPIO_TOOLS")
+                                )),
+                                "runbook_id" to JsonObject(mapOf(
+                                    "type" to JsonPrimitive("string"),
+                                    "description" to JsonPrimitive("Runbook identifier for run_runbook: link_health, input_smoke_test, recover_scan")
+                                )),
+                                "filter" to JsonObject(mapOf(
+                                    "type" to JsonPrimitive("string"),
+                                    "description" to JsonPrimitive("Type filter for list_vault: SUB_GHZ, INFRARED, NFC, RFID, BAD_USB, IBUTTON")
                                 ))
                             ))
                         )),

@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +32,10 @@ import com.vesper.flipper.ble.FlipperDevice
 import com.vesper.flipper.domain.model.FlipperRemoteButton
 import com.vesper.flipper.ui.theme.*
 import com.vesper.flipper.ui.viewmodel.DeviceViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -128,6 +133,13 @@ fun DeviceScreen(
                         deviceInfo = deviceInfo!!,
                         storageInfo = storageInfo
                     )
+                }
+            }
+
+            // Advanced Operations (from Ops Center)
+            if (connectionState is ConnectionState.Connected) {
+                item {
+                    AdvancedOperationsSection(viewModel = viewModel, connectionState = connectionState, isSendingRemoteInput = isSendingRemoteInput, remoteInputStatus = remoteInputStatus)
                 }
             }
 
@@ -894,5 +906,196 @@ private fun formatBytes(bytes: Long): String {
         bytes < 1024 * 1024 -> "${bytes / 1024} KB"
         bytes < 1024 * 1024 * 1024 -> "${bytes / (1024 * 1024)} MB"
         else -> "${"%.1f".format(bytes.toFloat() / (1024 * 1024 * 1024))} GB"
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// ADVANCED OPERATIONS (merged from Ops Center)
+// ═══════════════════════════════════════════════════════════
+
+private data class AdvMacroStep(val button: FlipperRemoteButton, val delayMs: Long, val longPress: Boolean)
+
+@Composable
+private fun AdvancedOperationsSection(
+    viewModel: DeviceViewModel,
+    connectionState: ConnectionState,
+    isSendingRemoteInput: Boolean,
+    remoteInputStatus: String?
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // Runbook state
+    var runbookStatus by rememberSaveable { mutableStateOf<String?>(null) }
+    var runbookInFlight by remember { mutableStateOf(false) }
+
+    // Macro state
+    val macroSteps = remember { mutableStateListOf<AdvMacroStep>() }
+    var macroName by rememberSaveable { mutableStateOf("macro_1") }
+    var isRecording by rememberSaveable { mutableStateOf(false) }
+    var longPressMode by rememberSaveable { mutableStateOf(false) }
+    var lastRecordedAtMs by remember { mutableLongStateOf(0L) }
+    var replayStatus by rememberSaveable { mutableStateOf<String?>(null) }
+    var replayJob by remember { mutableStateOf<Job?>(null) }
+    var isReplaying by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) { onDispose { replayJob?.cancel() } }
+
+    fun sendAndRecord(button: FlipperRemoteButton) {
+        if (isRecording) {
+            val now = System.currentTimeMillis()
+            val delta = if (lastRecordedAtMs == 0L) 0L else (now - lastRecordedAtMs).coerceAtMost(5_000L)
+            macroSteps.add(AdvMacroStep(button, delta, longPressMode))
+            lastRecordedAtMs = now
+        }
+        scope.launch { viewModel.sendRemoteButtonAwait(button, longPressMode) }
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Expandable Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Engineering, null, tint = VesperOrange)
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text("Advanced Operations", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text("Runbooks, macros & diagnostics", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, "Toggle")
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+
+                    // ── RUNBOOKS ──
+                    Text("Runbooks", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = VesperOrange)
+
+                    val runbooks = listOf(
+                        Triple("Link Health Sweep", "Refresh telemetry + full diagnostics") {
+                            scope.launch {
+                                runbookInFlight = true
+                                runbookStatus = "Running health sweep..."
+                                viewModel.refreshDeviceInfo(); delay(250); viewModel.runConnectionDiagnostics()
+                                runbookStatus = "Health sweep complete."
+                                runbookInFlight = false
+                            }; Unit
+                        },
+                        Triple("Input Smoke Test", "Send Back > Up > Down > OK sequence") {
+                            if (connectionState !is ConnectionState.Connected) { runbookStatus = "Connect first."; return@Triple }
+                            scope.launch {
+                                runbookInFlight = true; runbookStatus = "Smoke testing..."
+                                listOf(FlipperRemoteButton.BACK, FlipperRemoteButton.UP, FlipperRemoteButton.DOWN, FlipperRemoteButton.OK).forEach {
+                                    viewModel.sendRemoteButtonAwait(it, false); delay(220)
+                                }
+                                runbookStatus = "Smoke test complete."; runbookInFlight = false
+                            }; Unit
+                        },
+                        Triple("Recover & Scan", "Disconnect and restart scanning") {
+                            scope.launch {
+                                runbookInFlight = true; runbookStatus = "Recovering..."
+                                viewModel.disconnect(); delay(350); viewModel.startScan()
+                                runbookStatus = "Recovery scan started."; runbookInFlight = false
+                            }; Unit
+                        }
+                    )
+
+                    runbooks.forEach { (title, desc, action) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                Text(desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            FilledTonalButton(onClick = { action() }, enabled = !runbookInFlight) {
+                                Text(if (runbookInFlight) "..." else "Run")
+                            }
+                        }
+                    }
+
+                    runbookStatus?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
+
+                    Divider()
+
+                    // ── MACRO RECORDER ──
+                    Text("Macro Recorder", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = VesperOrange)
+
+                    OutlinedTextField(
+                        value = macroName, onValueChange = { macroName = it },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Macro Name") }
+                    )
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Long Press Mode"); Switch(checked = longPressMode, onCheckedChange = { longPressMode = it })
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = {
+                            if (isRecording) { isRecording = false; replayStatus = "Recorded ${macroSteps.size} steps." }
+                            else { macroSteps.clear(); isRecording = true; lastRecordedAtMs = 0L; replayStatus = "Recording..." }
+                        }) { Text(if (isRecording) "Stop" else "Record") }
+
+                        OutlinedButton(onClick = { macroSteps.clear(); replayStatus = "Cleared." }) { Text("Clear") }
+
+                        Button(onClick = {
+                            if (isReplaying) { replayJob?.cancel(); isReplaying = false; replayStatus = "Cancelled." }
+                            else if (macroSteps.isNotEmpty()) {
+                                replayJob = scope.launch {
+                                    isReplaying = true; replayStatus = "Replaying..."
+                                    macroSteps.forEachIndexed { i, step ->
+                                        if (!isActive) return@launch
+                                        if (step.delayMs > 0L) delay(step.delayMs)
+                                        replayStatus = "Step ${i + 1}/${macroSteps.size}: ${step.button.label}"
+                                        viewModel.sendRemoteButtonAwait(step.button, step.longPress)
+                                        delay(160)
+                                    }
+                                    replayStatus = "Done (${macroSteps.size} steps)."; isReplaying = false
+                                }
+                            }
+                        }) { Text(if (isReplaying) "Stop" else "Replay") }
+                    }
+
+                    Text("${macroSteps.size} steps recorded", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    replayStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+
+                    // Mini D-pad for recording
+                    if (isRecording) {
+                        Divider()
+                        Text("Tap buttons to record:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp), horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                                OutlinedButton(onClick = { sendAndRecord(FlipperRemoteButton.UP) }, enabled = !isSendingRemoteInput) { Text("UP") }
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                OutlinedButton(onClick = { sendAndRecord(FlipperRemoteButton.LEFT) }, enabled = !isSendingRemoteInput) { Text("LEFT") }
+                                OutlinedButton(onClick = { sendAndRecord(FlipperRemoteButton.OK) }, enabled = !isSendingRemoteInput) { Text("OK") }
+                                OutlinedButton(onClick = { sendAndRecord(FlipperRemoteButton.RIGHT) }, enabled = !isSendingRemoteInput) { Text("RIGHT") }
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                                OutlinedButton(onClick = { sendAndRecord(FlipperRemoteButton.BACK) }, enabled = !isSendingRemoteInput) { Text("BACK") }
+                                OutlinedButton(onClick = { sendAndRecord(FlipperRemoteButton.DOWN) }, enabled = !isSendingRemoteInput) { Text("DOWN") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -58,7 +58,19 @@ enum class CommandAction {
     PUSH_ARTIFACT,
 
     @SerialName("execute_cli")
-    EXECUTE_CLI
+    EXECUTE_CLI,
+
+    @SerialName("forge_payload")
+    FORGE_PAYLOAD,
+
+    @SerialName("search_resources")
+    SEARCH_RESOURCES,
+
+    @SerialName("list_vault")
+    LIST_VAULT,
+
+    @SerialName("run_runbook")
+    RUN_RUNBOOK
 }
 
 @Serializable
@@ -74,7 +86,15 @@ data class CommandArgs(
     @SerialName("artifact_type")
     val artifactType: String? = null,
     @SerialName("artifact_data")
-    val artifactData: String? = null
+    val artifactData: String? = null,
+    val prompt: String? = null,
+    @SerialName("resource_type")
+    val resourceType: String? = null,
+    @SerialName("runbook_id")
+    val runbookId: String? = null,
+    @SerialName("payload_type")
+    val payloadType: String? = null,
+    val filter: String? = null
 )
 
 /**

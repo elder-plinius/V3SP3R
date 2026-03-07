@@ -6,232 +6,190 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.vesper.flipper.domain.model.*
 import com.vesper.flipper.ui.theme.*
 import com.vesper.flipper.ui.viewmodel.AlchemyLabViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AlchemyLabScreen(
     viewModel: AlchemyLabViewModel = hiltViewModel()
 ) {
-    val project by viewModel.project.collectAsState()
-    val waveformPreview by viewModel.waveformPreview.collectAsState()
-    val selectedLayerIndex by viewModel.selectedLayerIndex.collectAsState()
-    val isPlaying by viewModel.isPlaying.collectAsState()
+    val forgeInput by viewModel.forgeInput.collectAsState()
+    val isForging by viewModel.isForging.collectAsState()
+    val currentBlueprint by viewModel.currentBlueprint.collectAsState()
+    val forgeError by viewModel.forgeError.collectAsState()
+    val editingLoot by viewModel.editingLoot.collectAsState()
+    val editContent by viewModel.editContent.collectAsState()
     val isSaving by viewModel.isSaving.collectAsState()
-    val showExportDialog by viewModel.showExportDialog.collectAsState()
+    val filteredLoot by viewModel.filteredLoot.collectAsState()
+    val selectedFilter by viewModel.selectedFilter.collectAsState()
+    val isLoadingVault by viewModel.isLoadingVault.collectAsState()
+    val vaultStats by viewModel.vaultStats.collectAsState()
     val message by viewModel.message.collectAsState()
-    val exportedCode by viewModel.exportedCode.collectAsState()
 
-    var showAddLayerMenu by remember { mutableStateOf(false) }
-    var showTemplateMenu by remember { mutableStateOf(false) }
-    var showPresetMenu by remember { mutableStateOf(false) }
-
-    // Snackbar
     LaunchedEffect(message) {
         message?.let {
-            kotlinx.coroutines.delay(2000)
+            kotlinx.coroutines.delay(3000)
             viewModel.clearMessage()
         }
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(VesperBackdropBrush)
     ) {
-        // Header
-        TopAppBar(
-            title = {
-                Column {
-                    Text("Protocol Alchemy", fontWeight = FontWeight.Bold)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 80.dp)
+        ) {
+            // ═══════════════════ HEADER ═══════════════════
+            item {
+                Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Alchemy Lab",
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Surface(
+                            color = VesperOrange.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                "AI FORGE",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = VesperOrange,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                        }
+                    }
                     Text(
-                        "Signal Synthesizer",
-                        style = MaterialTheme.typography.bodySmall,
+                        "Craft payloads. Manage your loot. Forge the future.",
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            },
-            actions = {
-                // Templates
-                Box {
-                    IconButton(onClick = { showTemplateMenu = true }) {
-                        Icon(Icons.Default.AutoAwesome, "Templates")
-                    }
-                    DropdownMenu(
-                        expanded = showTemplateMenu,
-                        onDismissRequest = { showTemplateMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Princeton Clone") },
-                            onClick = {
-                                viewModel.addPrincetonTemplate()
-                                showTemplateMenu = false
-                            },
-                            leadingIcon = { Text("📡") }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Garage Door") },
-                            onClick = {
-                                viewModel.addGarageDoorTemplate()
-                                showTemplateMenu = false
-                            },
-                            leadingIcon = { Text("🚗") }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Test Jammer") },
-                            onClick = {
-                                viewModel.addJammerTemplate()
-                                showTemplateMenu = false
-                            },
-                            leadingIcon = { Text("📻") }
-                        )
-                        Divider()
-                        DropdownMenuItem(
-                            text = { Text("New Project") },
-                            onClick = {
-                                viewModel.newProject()
-                                showTemplateMenu = false
-                            },
-                            leadingIcon = { Icon(Icons.Default.Add, null) }
-                        )
-                    }
-                }
-
-                IconButton(onClick = { viewModel.showExport() }) {
-                    Icon(Icons.Default.Upload, "Export")
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            )
-        )
-
-        // Project Settings Bar
-        ProjectSettingsBar(
-            project = project,
-            onNameChange = { viewModel.updateProjectName(it) },
-            onPresetClick = { showPresetMenu = true },
-            onModulationChange = { viewModel.updateModulation(it) }
-        )
-
-        // Waveform Preview
-        WaveformPreviewCard(
-            waveform = waveformPreview,
-            isPlaying = isPlaying,
-            onPlay = { viewModel.playPreview() },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        )
-
-        // Layer Controls Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                "SIGNAL LAYERS",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Box {
-                FilledTonalButton(onClick = { showAddLayerMenu = true }) {
-                    Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Add Layer")
-                }
-                DropdownMenu(
-                    expanded = showAddLayerMenu,
-                    onDismissRequest = { showAddLayerMenu = false }
-                ) {
-                    LayerType.entries.forEach { type ->
-                        DropdownMenuItem(
-                            text = { Text(type.displayName) },
-                            onClick = {
-                                viewModel.addLayer(type)
-                                showAddLayerMenu = false
-                            },
-                            leadingIcon = { Text(type.icon) }
-                        )
-                    }
-                }
             }
-        }
 
-        // Layers List
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            itemsIndexed(project.layers, key = { _, layer -> layer.id }) { index, layer ->
-                LayerCard(
-                    layer = layer,
-                    index = index,
-                    isSelected = selectedLayerIndex == index,
-                    onSelect = { viewModel.selectLayer(index) },
-                    onToggleEnabled = { viewModel.toggleLayerEnabled(index) },
-                    onVolumeChange = { viewModel.updateLayerVolume(index, it) },
-                    onBitDurationChange = { viewModel.updateLayerBitDuration(index, it) },
-                    onEncodingChange = { viewModel.updateLayerEncoding(index, it) },
-                    onRepeatChange = { viewModel.updateLayerRepeatCount(index, it) },
-                    onBitsChange = { viewModel.updateLayerBits(index, it) },
-                    onMoveUp = { viewModel.moveLayerUp(index) },
-                    onMoveDown = { viewModel.moveLayerDown(index) },
-                    onDuplicate = { viewModel.duplicateLayer(index) },
-                    onDelete = { viewModel.removeLayer(index) },
-                    isFirst = index == 0,
-                    isLast = index == project.layers.size - 1
+            // ═══════════════════ THE FORGE ═══════════════════
+            item {
+                TheForgeSection(
+                    input = forgeInput,
+                    onInputChange = { viewModel.updateForgeInput(it) },
+                    isForging = isForging,
+                    onForge = { viewModel.forge() },
+                    error = forgeError
                 )
             }
 
-            if (project.layers.isEmpty()) {
+            // Blueprint Card
+            item {
+                AnimatedVisibility(
+                    visible = currentBlueprint != null,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    currentBlueprint?.let { bp ->
+                        BlueprintCard(
+                            blueprint = bp,
+                            onDeploy = { viewModel.deployBlueprint() },
+                            onEditSection = { viewModel.editBlueprintSection(it) },
+                            onDismiss = { viewModel.clearBlueprint() }
+                        )
+                    }
+                }
+            }
+
+            // ═══════════════════ THE VAULT ═══════════════════
+            item {
+                VaultHeader(
+                    stats = vaultStats,
+                    selectedFilter = selectedFilter,
+                    onFilterChange = { viewModel.setFilter(it) },
+                    onRefresh = { viewModel.loadVault() },
+                    isLoading = isLoadingVault
+                )
+            }
+
+            if (isLoadingVault) {
                 item {
-                    EmptyLayersPlaceholder()
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = VesperOrange)
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Scanning vault...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            } else if (filteredLoot.isEmpty()) {
+                item {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(48.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("🗄", style = MaterialTheme.typography.displayLarge)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("Vault is empty", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            "Connect your Flipper to scan for loot,\nor use The Forge to craft new payloads",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            } else {
+                items(filteredLoot, key = { it.id }) { loot ->
+                    LootCardItem(
+                        loot = loot,
+                        onTap = { viewModel.openInWorkbench(loot) },
+                        onDelete = { viewModel.deleteLoot(loot) },
+                        onDuplicate = { viewModel.duplicateLoot(loot) }
+                    )
                 }
             }
         }
 
-        // Message Banner
+        // Message Toast
         AnimatedVisibility(
             visible = message != null,
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
         ) {
             Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = VesperAccent.copy(alpha = 0.9f)
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                color = VesperAccent.copy(alpha = 0.9f),
+                shape = RoundedCornerShape(12.dp)
             ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
@@ -244,663 +202,427 @@ fun AlchemyLabScreen(
                 }
             }
         }
-    }
 
-    // Preset Selection Dialog
-    if (showPresetMenu) {
-        PresetSelectionDialog(
-            selectedPreset = project.preset,
-            onSelect = {
-                viewModel.selectPreset(it)
-                showPresetMenu = false
-            },
-            onDismiss = { showPresetMenu = false }
-        )
-    }
-
-    // Export Dialog
-    if (showExportDialog) {
-        ExportDialog(
-            code = exportedCode ?: "",
-            isSaving = isSaving,
-            onSave = { viewModel.saveToFlipper() },
-            onDismiss = { viewModel.hideExport() }
-        )
+        // Workbench Dialog
+        editingLoot?.let { loot ->
+            WorkbenchDialog(
+                loot = loot,
+                content = editContent,
+                onContentChange = { viewModel.updateEditContent(it) },
+                onSave = { viewModel.saveWorkbench() },
+                onDismiss = { viewModel.closeWorkbench() },
+                isSaving = isSaving
+            )
+        }
     }
 }
 
+// ═══════════════════════════════════════════════════════════
+// THE FORGE — AI Crafter Section
+// ═══════════════════════════════════════════════════════════
+
 @Composable
-private fun ProjectSettingsBar(
-    project: AlchemyProject,
-    onNameChange: (String) -> Unit,
-    onPresetClick: () -> Unit,
-    onModulationChange: (ModulationType) -> Unit
+private fun TheForgeSection(
+    input: String,
+    onInputChange: (String) -> Unit,
+    isForging: Boolean,
+    onForge: () -> Unit,
+    error: String?
 ) {
-    var showModMenu by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)),
+        border = BorderStroke(1.dp, VesperOrange.copy(alpha = 0.3f))
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            // Name
-            OutlinedTextField(
-                value = project.name,
-                onValueChange = onNameChange,
-                label = { Text("Project Name") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = VesperOrange,
-                    cursorColor = VesperOrange
-                )
-            )
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.AutoAwesome, null, tint = VesperOrange, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("THE FORGE", style = MaterialTheme.typography.labelLarge, color = VesperOrange, letterSpacing = 2.sp)
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            Row(
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInputChange,
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // Frequency Preset
-                OutlinedButton(
-                    onClick = onPresetClick,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            AlchemyLabViewModel.formatFrequency(project.frequency),
-                            fontWeight = FontWeight.Bold,
-                            color = VesperOrange
-                        )
-                        Text(
-                            project.preset.displayName,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
+                placeholder = { Text("What do you want to craft?", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)) },
+                minLines = 2,
+                maxLines = 4,
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = VesperOrange, cursorColor = VesperOrange),
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus(); if (input.isNotBlank()) onForge() })
+            )
 
-                // Modulation
-                Box(modifier = Modifier.weight(1f)) {
-                    OutlinedButton(
-                        onClick = { showModMenu = true },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                project.modulation.displayName,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text("Modulation", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                    DropdownMenu(
-                        expanded = showModMenu,
-                        onDismissRequest = { showModMenu = false }
-                    ) {
-                        ModulationType.entries.forEach { mod ->
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(mod.displayName)
-                                        Text(
-                                            mod.description,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    onModulationChange(mod)
-                                    showModMenu = false
-                                }
-                            )
-                        }
-                    }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Quick Suggestions
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val suggestions = listOf(
+                    "a BadUSB script that opens a terminal",
+                    "a 433MHz garage signal clone",
+                    "an IR remote for Samsung TV",
+                    "an NFC tag with contact info"
+                )
+                items(suggestions) { s ->
+                    AssistChip(
+                        onClick = { onInputChange(s) },
+                        label = { Text(s, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) },
+                        colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    )
                 }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onForge,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = input.isNotBlank() && !isForging,
+                colors = ButtonDefaults.buttonColors(containerColor = VesperOrange),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                if (isForging) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Forging...", fontWeight = FontWeight.Bold)
+                } else {
+                    Icon(Icons.Default.AutoAwesome, null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Forge It", fontWeight = FontWeight.Bold)
+                }
+            }
+
+            error?.let {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(it, color = RiskHigh, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
 }
 
+// ═══════════════════════════════════════════════════════════
+// BLUEPRINT CARD
+// ═══════════════════════════════════════════════════════════
+
 @Composable
-private fun WaveformPreviewCard(
-    waveform: List<Float>,
-    isPlaying: Boolean,
-    onPlay: () -> Unit,
-    modifier: Modifier = Modifier
+private fun BlueprintCard(
+    blueprint: ForgeBlueprint,
+    onDeploy: () -> Unit,
+    onEditSection: (Int) -> Unit,
+    onDismiss: () -> Unit
 ) {
+    val rarityColor = Color(blueprint.rarity.color)
+
     Card(
-        modifier = modifier,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(2.dp, rarityColor.copy(alpha = 0.6f))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "WAVEFORM PREVIEW",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                FilledIconButton(
-                    onClick = onPlay,
-                    enabled = !isPlaying,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = VesperOrange
-                    )
-                ) {
-                    if (isPlaying) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            color = Color.White,
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Icon(Icons.Default.PlayArrow, "Play Preview")
+            // Header
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(
+                            Brush.linearGradient(listOf(Color(blueprint.payloadType.color), Color(blueprint.payloadType.color).copy(alpha = 0.6f)))
+                        ),
+                        contentAlignment = Alignment.Center
+                    ) { Text(blueprint.payloadType.icon, style = MaterialTheme.typography.titleLarge) }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(blueprint.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = Color.White)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(color = Color(blueprint.rarity.glowColor), shape = RoundedCornerShape(4.dp)) {
+                                Text(blueprint.rarity.displayName, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = rarityColor, fontWeight = FontWeight.Bold)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(blueprint.payloadType.displayName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
+                }
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Dismiss", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(blueprint.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            // Editable Sections
+            if (blueprint.sections.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("BLUEPRINT PARAMETERS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.sp)
+                Spacer(modifier = Modifier.height(8.dp))
+                blueprint.sections.forEachIndexed { index, section ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .clickable(enabled = section.editable) { onEditSection(index) }
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(section.label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(section.value, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace, color = Color.White, fontWeight = FontWeight.Medium)
+                            if (section.editable) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(Icons.Default.Edit, null, modifier = Modifier.size(14.dp), tint = VesperOrange.copy(alpha = 0.6f))
+                            }
+                        }
+                    }
+                    if (index < blueprint.sections.lastIndex) Spacer(modifier = Modifier.height(4.dp))
+                }
+            }
+
+            // Code Preview
+            Spacer(modifier = Modifier.height(12.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 150.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0A0E14)),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Box(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(12.dp)) {
+                    Text(blueprint.generatedCode, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, color = VesperAccent.copy(alpha = 0.8f), fontSize = 11.sp)
                 }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
+            Text("Target: ${blueprint.flipperPath}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontFamily = FontFamily.Monospace)
 
-            // Waveform Canvas
-            Canvas(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(80.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                val width = size.width
-                val height = size.height
-                val padding = 8f
-
-                if (waveform.isEmpty()) return@Canvas
-
-                val path = Path()
-                val step = (width - 2 * padding) / waveform.size
-
-                waveform.forEachIndexed { index, value ->
-                    val x = padding + index * step
-                    val y = padding + (1f - value) * (height - 2 * padding)
-
-                    if (index == 0) {
-                        path.moveTo(x, y)
-                    } else {
-                        path.lineTo(x, y)
+            // Deploy Button
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                onClick = onDeploy,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = blueprint.status == ForgeStatus.BLUEPRINT,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = when (blueprint.status) {
+                        ForgeStatus.FORGED -> RiskLow; ForgeStatus.FAILED -> RiskHigh; else -> VesperOrange
                     }
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                when (blueprint.status) {
+                    ForgeStatus.BLUEPRINT -> { Icon(Icons.Default.RocketLaunch, null); Spacer(modifier = Modifier.width(8.dp)); Text("Deploy to Flipper", fontWeight = FontWeight.Bold) }
+                    ForgeStatus.FORGING -> { CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp); Spacer(modifier = Modifier.width(8.dp)); Text("Deploying...") }
+                    ForgeStatus.FORGED -> { Icon(Icons.Default.CheckCircle, null); Spacer(modifier = Modifier.width(8.dp)); Text("Deployed!") }
+                    ForgeStatus.FAILED -> { Icon(Icons.Default.Error, null); Spacer(modifier = Modifier.width(8.dp)); Text("Failed") }
                 }
+            }
+        }
+    }
+}
 
-                // Draw waveform
-                drawPath(
-                    path = path,
-                    color = Color(0xFFFF6B00),
-                    style = Stroke(width = 2f, cap = StrokeCap.Round)
+// ═══════════════════════════════════════════════════════════
+// THE VAULT HEADER & FILTERS
+// ═══════════════════════════════════════════════════════════
+
+@Composable
+private fun VaultHeader(
+    stats: Map<PayloadType, Int>,
+    selectedFilter: PayloadType?,
+    onFilterChange: (PayloadType?) -> Unit,
+    onRefresh: () -> Unit,
+    isLoading: Boolean
+) {
+    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("THE VAULT", style = MaterialTheme.typography.labelLarge, color = VesperOrange, letterSpacing = 2.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
+                    Text("${stats.values.sum()} items", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            IconButton(onClick = onRefresh, enabled = !isLoading) {
+                if (isLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = VesperOrange)
+                else Icon(Icons.Default.Refresh, "Refresh vault", tint = VesperOrange)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item {
+                FilterChip(
+                    selected = selectedFilter == null,
+                    onClick = { onFilterChange(null) },
+                    label = { Text("All") },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = VesperOrange, selectedLabelColor = Color.White)
                 )
-
-                // Draw gradient fill
-                val fillPath = Path().apply {
-                    addPath(path)
-                    lineTo(width - padding, height - padding)
-                    lineTo(padding, height - padding)
-                    close()
-                }
-                drawPath(
-                    path = fillPath,
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFFFF6B00).copy(alpha = 0.3f),
-                            Color(0xFFFF6B00).copy(alpha = 0.05f)
-                        )
-                    )
+            }
+            val types = listOf(PayloadType.SUB_GHZ, PayloadType.INFRARED, PayloadType.NFC, PayloadType.RFID, PayloadType.BAD_USB, PayloadType.IBUTTON)
+            items(types) { type ->
+                FilterChip(
+                    selected = selectedFilter == type,
+                    onClick = { onFilterChange(type) },
+                    label = { Text("${type.icon} ${type.displayName} (${stats[type] ?: 0})") },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Color(type.color), selectedLabelColor = Color.White)
                 )
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+// ═══════════════════════════════════════════════════════════
+// LOOT CARD ITEM
+// ═══════════════════════════════════════════════════════════
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LayerCard(
-    layer: SignalLayer,
-    index: Int,
-    isSelected: Boolean,
-    onSelect: () -> Unit,
-    onToggleEnabled: () -> Unit,
-    onVolumeChange: (Float) -> Unit,
-    onBitDurationChange: (Int) -> Unit,
-    onEncodingChange: (BitEncoding) -> Unit,
-    onRepeatChange: (Int) -> Unit,
-    onBitsChange: (String) -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    onDuplicate: () -> Unit,
+private fun LootCardItem(
+    loot: LootCard,
+    onTap: () -> Unit,
     onDelete: () -> Unit,
-    isFirst: Boolean,
-    isLast: Boolean
+    onDuplicate: () -> Unit
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    var showEncodingMenu by remember { mutableStateOf(false) }
+    val rarityColor = Color(loot.rarity.color)
+    var showActions by remember { mutableStateOf(false) }
 
     Card(
-        onClick = {
-            onSelect()
-            expanded = !expanded
-        },
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) {
-                Color(layer.color).copy(alpha = 0.15f)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            }
-        ),
-        border = if (isSelected) {
-            BorderStroke(2.dp, Color(layer.color))
-        } else null
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+            .combinedClickable(onClick = onTap, onLongClick = { showActions = true }),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
+        border = BorderStroke(1.dp, rarityColor.copy(alpha = 0.2f))
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            // Header Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Color indicator
-                    Box(
-                        modifier = Modifier
-                            .size(12.dp)
-                            .clip(CircleShape)
-                            .background(Color(layer.color))
-                    )
+        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(
+                    Brush.linearGradient(listOf(Color(loot.payloadType.color), Color(loot.payloadType.color).copy(alpha = 0.5f)))
+                ),
+                contentAlignment = Alignment.Center
+            ) { Text(loot.payloadType.icon, style = MaterialTheme.typography.titleLarge) }
 
-                    // Layer icon and name
-                    Text(layer.type.icon)
-                    Column {
-                        Text(
-                            layer.name,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            "${layer.pattern.bits.size} bits @ ${layer.pattern.bitDuration}µs",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(loot.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(color = Color(loot.rarity.glowColor), shape = RoundedCornerShape(4.dp)) {
+                        Text(loot.rarity.displayName, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = rarityColor, fontWeight = FontWeight.Bold, fontSize = 9.sp)
                     }
                 }
-
-                Row {
-                    // Enable toggle
-                    Switch(
-                        checked = layer.enabled,
-                        onCheckedChange = { onToggleEnabled() },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = Color(layer.color)
-                        ),
-                        modifier = Modifier.height(24.dp)
-                    )
-
-                    // Expand icon
-                    Icon(
-                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = "Expand",
-                        modifier = Modifier.size(24.dp)
-                    )
+                val metaLine = buildString {
+                    append(loot.payloadType.displayName)
+                    loot.metadata.entries.take(2).forEach { (_, v) -> append(" • $v") }
                 }
-            }
-
-            // Expanded Controls
-            AnimatedVisibility(visible = expanded) {
-                Column(
-                    modifier = Modifier.padding(top = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    // Volume/Amplitude
-                    Column {
-                        Text(
-                            "Amplitude: ${(layer.volume * 100).toInt()}%",
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                        Slider(
-                            value = layer.volume,
-                            onValueChange = onVolumeChange,
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color(layer.color),
-                                activeTrackColor = Color(layer.color)
-                            )
-                        )
-                    }
-
-                    // Bit Duration
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Bit Duration:", style = MaterialTheme.typography.labelSmall)
-                        OutlinedTextField(
-                            value = layer.pattern.bitDuration.toString(),
-                            onValueChange = { it.toIntOrNull()?.let(onBitDurationChange) },
-                            modifier = Modifier.weight(1f),
-                            suffix = { Text("µs") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                        )
-                    }
-
-                    // Encoding
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Encoding:", style = MaterialTheme.typography.labelSmall)
-                        Box(modifier = Modifier.weight(1f)) {
-                            OutlinedButton(
-                                onClick = { showEncodingMenu = true },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(layer.pattern.encoding.displayName)
+                Text(metaLine, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (loot.tags.isNotEmpty()) {
+                    Row(modifier = Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        loot.tags.take(3).forEach { tag ->
+                            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(4.dp)) {
+                                Text(tag, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            DropdownMenu(
-                                expanded = showEncodingMenu,
-                                onDismissRequest = { showEncodingMenu = false }
-                            ) {
-                                BitEncoding.entries.forEach { enc ->
-                                    DropdownMenuItem(
-                                        text = { Text(enc.displayName) },
-                                        onClick = {
-                                            onEncodingChange(enc)
-                                            showEncodingMenu = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Repeat Count
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Repeat:", style = MaterialTheme.typography.labelSmall)
-                        OutlinedTextField(
-                            value = layer.timing.repeatCount.toString(),
-                            onValueChange = { it.toIntOrNull()?.let(onRepeatChange) },
-                            modifier = Modifier.weight(1f),
-                            suffix = { Text("×") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                        )
-                    }
-
-                    // Bit Pattern (hex)
-                    if (layer.type == LayerType.DATA) {
-                        val hexValue = remember(layer.pattern.bits) {
-                            layer.pattern.bits.chunked(4).map { nibble ->
-                                nibble.foldIndexed(0) { i, acc, bit ->
-                                    acc or (if (bit) (1 shl (3 - i)) else 0)
-                                }.toString(16).uppercase()
-                            }.joinToString("")
-                        }
-
-                        OutlinedTextField(
-                            value = hexValue,
-                            onValueChange = { onBitsChange(it.filter { c -> c.isDigit() || c in 'A'..'F' || c in 'a'..'f' }) },
-                            label = { Text("Data (Hex)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
-                        )
-                    }
-
-                    // Action Buttons
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        IconButton(onClick = onMoveUp, enabled = !isFirst) {
-                            Icon(Icons.Default.KeyboardArrowUp, "Move Up")
-                        }
-                        IconButton(onClick = onMoveDown, enabled = !isLast) {
-                            Icon(Icons.Default.KeyboardArrowDown, "Move Down")
-                        }
-                        IconButton(onClick = onDuplicate) {
-                            Icon(Icons.Default.ContentCopy, "Duplicate")
-                        }
-                        Spacer(modifier = Modifier.weight(1f))
-                        IconButton(onClick = onDelete) {
-                            Icon(
-                                Icons.Default.Delete,
-                                "Delete",
-                                tint = MaterialTheme.colorScheme.error
-                            )
                         }
                     }
                 }
             }
+
+            Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
         }
+    }
+
+    if (showActions) {
+        AlertDialog(
+            onDismissRequest = { showActions = false },
+            title = { Text(loot.name) },
+            text = {
+                Column {
+                    Text("${loot.rarity.displayName} ${loot.payloadType.displayName}", color = rarityColor, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(loot.path, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { onDuplicate(); showActions = false }) {
+                        Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(16.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Duplicate")
+                    }
+                    TextButton(onClick = { onDelete(); showActions = false }) {
+                        Icon(Icons.Default.Delete, null, modifier = Modifier.size(16.dp), tint = RiskHigh); Spacer(modifier = Modifier.width(4.dp)); Text("Delete", color = RiskHigh)
+                    }
+                }
+            },
+            dismissButton = { TextButton(onClick = { showActions = false }) { Text("Cancel") } }
+        )
     }
 }
 
+// ═══════════════════════════════════════════════════════════
+// WORKBENCH DIALOG
+// ═══════════════════════════════════════════════════════════
+
 @Composable
-private fun PresetSelectionDialog(
-    selectedPreset: SignalPreset,
-    onSelect: (SignalPreset) -> Unit,
-    onDismiss: () -> Unit
+private fun WorkbenchDialog(
+    loot: LootCard,
+    content: String,
+    onContentChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit,
+    isSaving: Boolean
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    "Select Frequency Preset",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(loot.payloadType.icon, style = MaterialTheme.typography.titleLarge)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text("THE WORKBENCH", style = MaterialTheme.typography.labelSmall, color = VesperOrange, letterSpacing = 1.sp)
+                            Text(loot.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close") }
+                }
+
+                Row(modifier = Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(color = Color(loot.rarity.glowColor), shape = RoundedCornerShape(4.dp)) {
+                        Text(loot.rarity.displayName, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Color(loot.rarity.color), fontWeight = FontWeight.Bold)
+                    }
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(4.dp)) {
+                        Text(loot.payloadType.displayName, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+
+                Divider()
+
+                OutlinedTextField(
+                    value = content,
+                    onValueChange = onContentChange,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = VesperOrange, unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f), cursorColor = VesperOrange),
+                    shape = RoundedCornerShape(8.dp)
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(SignalPreset.entries) { preset ->
-                        Card(
-                            onClick = { onSelect(preset) },
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (preset == selectedPreset) {
-                                    VesperOrange.copy(alpha = 0.2f)
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceVariant
-                                }
-                            ),
-                            border = if (preset == selectedPreset) {
-                                BorderStroke(2.dp, VesperOrange)
-                            } else null
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text(
-                                        preset.displayName,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        AlchemyLabViewModel.formatFrequency(preset.frequency),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = VesperOrange
-                                    )
-                                }
-                                Surface(
-                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                                    shape = RoundedCornerShape(4.dp)
-                                ) {
-                                    Text(
-                                        preset.region,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ExportDialog(
-    code: String,
-    isSaving: Boolean,
-    onSave: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    val clipboardManager = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.8f)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Export Signal",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, "Close")
-                    }
-                }
-
                 Spacer(modifier = Modifier.height(8.dp))
+                Text(loot.path, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontFamily = FontFamily.Monospace)
+                Spacer(modifier = Modifier.height(12.dp))
 
-                // Code Preview
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
-                            .padding(12.dp)
-                    ) {
-                        Text(
-                            code,
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Action Buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            clipboardManager.setText(AnnotatedString(code))
-                            copied = true
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(
-                            if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                            null
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(if (copied) "Copied!" else "Copy")
-                    }
-
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Cancel") }
                     Button(
                         onClick = onSave,
-                        enabled = !isSaving,
                         modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = VesperOrange
-                        )
+                        enabled = !isSaving,
+                        colors = ButtonDefaults.buttonColors(containerColor = VesperOrange)
                     ) {
-                        if (isSaving) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                color = Color.White,
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(Icons.Default.Save, null)
-                        }
+                        if (isSaving) CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                        else Icon(Icons.Default.Save, null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Save to Flipper")
                     }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun EmptyLayersPlaceholder() {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text("⚗️", style = MaterialTheme.typography.displayLarge)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            "No layers yet",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            "Add layers to build your signal",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-        )
     }
 }

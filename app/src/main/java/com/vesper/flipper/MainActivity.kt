@@ -97,7 +97,7 @@ sealed class Screen(
     object Chat : Screen("chat", "Chat", Icons.Filled.Chat, Icons.Outlined.Chat)
     object Oracle : Screen("oracle", "Oracle", Icons.Filled.Visibility, Icons.Outlined.Visibility)
     object Arsenal : Screen("arsenal", "Arsenal", Icons.Filled.Sensors, Icons.Outlined.Sensors)
-    object Alchemy : Screen("alchemy", "Alchemy", Icons.Filled.Science, Icons.Outlined.Science)
+    object Alchemy : Screen("alchemy", "Alchemy", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome)
     object OpsCenter : Screen("ops_center", "Ops", Icons.Filled.BluetoothSearching, Icons.Outlined.BluetoothSearching)
     object PayloadLab : Screen("payload_lab", "Payloads", Icons.Filled.Code, Icons.Outlined.Code)
     object FapHub : Screen("faphub", "FapHub", Icons.Filled.Apps, Icons.Outlined.Apps)
@@ -109,11 +109,10 @@ sealed class Screen(
 
 val screens = listOf(
     Screen.Chat,
-    Screen.Settings,
-    Screen.FapHub,
-    Screen.OpsCenter,
     Screen.Alchemy,
-    Screen.Device
+    Screen.FapHub,
+    Screen.Device,
+    Screen.Settings
 )
 
 @Composable

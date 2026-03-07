@@ -178,6 +178,40 @@ class RiskAssessor @Inject constructor(
                 )
             }
 
+            // LOW risk: read-only new actions
+            CommandAction.SEARCH_RESOURCES,
+            CommandAction.LIST_VAULT -> {
+                RiskAssessment(
+                    level = RiskLevel.LOW,
+                    reason = "Read-only catalog/inventory query",
+                    affectedPaths = paths,
+                    requiresDiff = false,
+                    requiresConfirmation = false
+                )
+            }
+
+            // MEDIUM risk: AI forge generates content (doesn't write to Flipper yet)
+            CommandAction.FORGE_PAYLOAD -> {
+                RiskAssessment(
+                    level = RiskLevel.MEDIUM,
+                    reason = "AI payload generation",
+                    affectedPaths = paths,
+                    requiresDiff = false,
+                    requiresConfirmation = true
+                )
+            }
+
+            // MEDIUM risk: runbooks execute read-only diagnostic sequences
+            CommandAction.RUN_RUNBOOK -> {
+                RiskAssessment(
+                    level = RiskLevel.MEDIUM,
+                    reason = "Diagnostic runbook execution",
+                    affectedPaths = paths,
+                    requiresDiff = false,
+                    requiresConfirmation = true
+                )
+            }
+
             CommandAction.EXECUTE_CLI -> {
                 val cliCommand = (command.args.command ?: command.args.content).orEmpty()
                 if (isLowRiskCli(cliCommand)) {
