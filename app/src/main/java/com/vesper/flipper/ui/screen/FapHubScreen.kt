@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.vesper.flipper.ui.screen
 
 import androidx.compose.animation.*
@@ -29,7 +31,6 @@ import com.vesper.flipper.ui.viewmodel.FapHubViewModel
 import com.vesper.flipper.ui.viewmodel.FapHubViewModel.HubTab
 import com.vesper.flipper.ui.viewmodel.SortOption
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FapHubScreen(
     viewModel: FapHubViewModel = hiltViewModel()
@@ -354,7 +355,6 @@ private fun ResourceRepoCard(
 // REPO DETAIL SHEET
 // ═══════════════════════════════════════════════════════════
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RepoDetailSheet(
     repo: FlipperResourceRepo,
@@ -485,7 +485,6 @@ private fun InstallButton(isInstalled: Boolean, status: InstallStatus?, onInstal
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AppDetailSheet(app: FapApp, installStatus: InstallStatus?, onInstall: () -> Unit, onUninstall: () -> Unit, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Color(0xFF1E1E2E)) {
