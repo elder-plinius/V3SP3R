@@ -282,7 +282,10 @@ fun ChatScreen(
                 .padding(padding)
         ) {
             if (conversationState.messages.isEmpty()) {
-                EmptyChat()
+                EmptyChat(onSuggestionClick = { suggestion ->
+                    viewModel.updateInput(suggestion)
+                    viewModel.sendMessage()
+                })
             } else {
                 LazyColumn(
                     state = listState,
@@ -318,7 +321,7 @@ fun ChatScreen(
 }
 
 @Composable
-private fun EmptyChat() {
+private fun EmptyChat(onSuggestionClick: (String) -> Unit) {
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -376,9 +379,9 @@ private fun EmptyChat() {
             Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                SuggestionChip("List files on the SD card")
-                SuggestionChip("Forge a Sub-GHz signal")
-                SuggestionChip("Install an app from FapHub")
+                SuggestionChip("List files on the SD card", onClick = onSuggestionClick)
+                SuggestionChip("Forge a Sub-GHz signal", onClick = onSuggestionClick)
+                SuggestionChip("Install an app from FapHub", onClick = onSuggestionClick)
             }
             Spacer(modifier = Modifier.height(12.dp))
             Text(
@@ -391,8 +394,9 @@ private fun EmptyChat() {
 }
 
 @Composable
-private fun SuggestionChip(text: String) {
+private fun SuggestionChip(text: String, onClick: (String) -> Unit) {
     Surface(
+        onClick = { onClick(text) },
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
         border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
@@ -833,7 +837,7 @@ private fun ChatInputBar(
                         Icon(
                             if (isListening) Icons.Default.Stop else Icons.Default.Mic,
                             contentDescription = if (isListening) "Stop listening" else "Voice input",
-                            tint = if (isListening) MaterialTheme.colorScheme.error else VesperOrange
+                            tint = VesperOrange
                         )
                     }
                 }

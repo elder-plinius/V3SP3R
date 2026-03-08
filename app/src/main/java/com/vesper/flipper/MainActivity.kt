@@ -27,13 +27,17 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.vesper.flipper.ble.FlipperBleService
+import com.vesper.flipper.data.SettingsStore
 import com.vesper.flipper.ui.screen.*
 import com.vesper.flipper.ui.theme.VesperBackdropBrush
 import com.vesper.flipper.ui.theme.VesperTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject lateinit var settingsStore: SettingsStore
 
     private val requiredPermissions = buildList {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -65,7 +69,8 @@ class MainActivity : ComponentActivity() {
         checkAndRequestPermissions()
 
         setContent {
-            VesperTheme(darkTheme = true) {
+            val darkMode by settingsStore.darkMode.collectAsState(initial = true)
+            VesperTheme(darkTheme = darkMode) {
                 VesperApp()
             }
         }

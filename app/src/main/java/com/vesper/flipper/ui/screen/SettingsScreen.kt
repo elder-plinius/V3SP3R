@@ -443,7 +443,7 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("Version")
-                        Text("1.0.0", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(com.vesper.flipper.BuildConfig.VERSION_NAME, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
