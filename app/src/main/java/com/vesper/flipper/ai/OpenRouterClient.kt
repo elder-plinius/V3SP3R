@@ -1135,6 +1135,18 @@ class OpenRouterClient @Inject constructor(
                                     "type" to JsonPrimitive("string"),
                                     "description" to JsonPrimitive("Arguments for launch_app or ble_spam (e.g. 'stop')")
                                 )),
+                                "frequency" to JsonObject(mapOf(
+                                    "type" to JsonPrimitive("integer"),
+                                    "description" to JsonPrimitive("Frequency in Hz for subghz_transmit (e.g. 433920000)")
+                                )),
+                                "protocol" to JsonObject(mapOf(
+                                    "type" to JsonPrimitive("string"),
+                                    "description" to JsonPrimitive("Protocol name for subghz_transmit or rfid_emulate (e.g. 'RAW', 'Princeton', 'EM4100')")
+                                )),
+                                "address" to JsonObject(mapOf(
+                                    "type" to JsonPrimitive("string"),
+                                    "description" to JsonPrimitive("Address/UID for NFC/RFID emulation")
+                                )),
                                 "signal_name" to JsonObject(mapOf(
                                     "type" to JsonPrimitive("string"),
                                     "description" to JsonPrimitive("Signal name within an IR file for ir_transmit (e.g. 'Power', 'Vol_up')")

@@ -446,8 +446,9 @@ class RiskAssessor @Inject constructor(
             "ble_scan",
             "blescan",
             "ble scan",
-            "badusb run",
-            "badusb start"
+            // Note: badusb is HIGH risk via dedicated BADUSB_EXECUTE action.
+            // But if someone uses raw CLI, we still want user confirmation (HIGH via else branch).
+            // So badusb is intentionally NOT in the MEDIUM list.
         )
     }
 }
