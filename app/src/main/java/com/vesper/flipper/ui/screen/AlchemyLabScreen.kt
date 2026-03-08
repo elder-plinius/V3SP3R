@@ -90,7 +90,7 @@ fun AlchemyLabScreen(
                         }
                     }
                     Text(
-                        "Craft payloads. Manage your loot. Forge the future.",
+                        "Craft payloads. Manage your arsenal. Forge the future.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -160,7 +160,7 @@ fun AlchemyLabScreen(
                         Spacer(modifier = Modifier.height(16.dp))
                         Text("Vault is empty", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(
-                            "Connect your Flipper to scan for loot,\nor use The Forge to craft new payloads",
+                            "Connect your Flipper to scan your arsenal,\nor use The Forge to craft new payloads",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                             textAlign = TextAlign.Center

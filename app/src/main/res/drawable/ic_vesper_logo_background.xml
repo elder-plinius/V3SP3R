@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Pure dark background — single solid color for clean minimalism -->
+    <!-- Deep noir background -->
     <item>
         <shape android:shape="rectangle">
-            <solid android:color="#FF060810" />
+            <solid android:color="#FF030508" />
         </shape>
     </item>
 
-    <!-- Single subtle radial glow — warm gold, centered -->
+    <!-- Subtle wine-red centered vignette -->
     <item>
         <shape android:shape="rectangle">
             <gradient
                 android:type="radial"
                 android:gradientRadius="54dp"
                 android:centerX="0.5"
-                android:centerY="0.45"
-                android:startColor="#18CDAA63"
+                android:centerY="0.5"
+                android:startColor="#128B2252"
                 android:endColor="#00000000" />
         </shape>
     </item>

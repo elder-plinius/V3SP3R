@@ -13,18 +13,34 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// Vesper Brand Colors - "Bond Noir"
-val VesperOrange = Color(0xFFCDAA63)      // Gold accent
-val VesperOrangeDark = Color(0xFF9E7A3F)
-val VesperSecondary = Color(0xFF1D2A3A)   // Steel blue
-val VesperAccent = Color(0xFF3ED9C8)      // Tactical cyan
+// ═══════════════════════════════════════════════════════════
+// VESPER BRAND — Classy Mythic Cyberpunk Bond
+// ═══════════════════════════════════════════════════════════
 
-// Surface Colors
-val VesperSurface = Color(0xFF0F1622)
-val VesperSurfaceVariant = Color(0xFF172131)
-val VesperBackground = Color(0xFF05080F)
-val VesperBackgroundDeep = Color(0xFF0A111C)
-val VesperBackgroundGlow = Color(0xFF11223A)
+// Primary: Wine Red — the blood of the machine
+val VesperWine = Color(0xFF8B2252)           // Deep wine / claret
+val VesperWineLight = Color(0xFFAD3B6B)      // Lighter wine for highlights
+val VesperWineDark = Color(0xFF5E1637)        // Darker wine for pressed states
+
+// Legacy alias — keeps existing references working
+val VesperOrange = VesperWine
+val VesperOrangeDark = VesperWineDark
+
+// Secondary: Gunmetal — cold steel sophistication
+val VesperSecondary = Color(0xFF1A1F2E)       // Gunmetal blue-black
+val VesperGunmetal = Color(0xFF2A3142)         // Lighter gunmetal
+
+// Accent: Champagne Gold — old money elegance
+val VesperAccent = Color(0xFFD4AF37)           // Champagne gold
+val VesperGold = Color(0xFFD4AF37)
+val VesperGoldMuted = Color(0xFF9E8530)        // Muted gold for secondary accents
+
+// Surface Colors — deep noir palette
+val VesperSurface = Color(0xFF0E1118)
+val VesperSurfaceVariant = Color(0xFF161B28)
+val VesperBackground = Color(0xFF060810)
+val VesperBackgroundDeep = Color(0xFF030508)
+val VesperBackgroundGlow = Color(0xFF0D0A14)   // Very subtle wine tint
 
 val VesperBackdropBrush = Brush.verticalGradient(
     colors = listOf(
@@ -35,71 +51,77 @@ val VesperBackdropBrush = Brush.verticalGradient(
     )
 )
 
-// Risk Colors
-val RiskLow = Color(0xFF5ED39D)
-val RiskMedium = Color(0xFFE0BF6B)
-val RiskHigh = Color(0xFFFF6D6D)
-val RiskBlocked = Color(0xFF8C99B3)
+// Risk Colors — refined
+val RiskLow = Color(0xFF4CAF7D)
+val RiskMedium = Color(0xFFD4AF37)   // Gold for medium — on brand
+val RiskHigh = Color(0xFFCF4455)     // Wine-adjacent red
+val RiskBlocked = Color(0xFF6B7394)
 
 // Diff Colors
 val DiffAdded = Color(0xFF3CBF88)
-val DiffRemoved = Color(0xFFE06262)
-val DiffChanged = Color(0xFFD1B062)
+val DiffRemoved = Color(0xFFCF4455)
+val DiffChanged = Color(0xFFD4AF37)
 val DiffAddedBackground = Color(0x403CBF88)
-val DiffRemovedBackground = Color(0x40E06262)
+val DiffRemovedBackground = Color(0x40CF4455)
+
+// Chat Colors — distinct from system
+val ChatAssistant = Color(0xFF161B28)       // Dark gunmetal bubble
+val ChatUser = VesperWine                    // Wine bubble for user
+val ChatTool = Color(0xFF121620)             // Even darker for tool results
+val ChatToolAccent = VesperGold              // Gold for tool highlights
 
 private val DarkColorScheme = darkColorScheme(
-    primary = VesperOrange,
-    onPrimary = Color(0xFF111213),
-    primaryContainer = VesperOrangeDark,
-    onPrimaryContainer = Color(0xFFF8E9C8),
+    primary = VesperWine,
+    onPrimary = Color(0xFFF5E6EC),
+    primaryContainer = VesperWineDark,
+    onPrimaryContainer = Color(0xFFF8E0EC),
     secondary = VesperSecondary,
-    onSecondary = Color(0xFFCAD8EA),
+    onSecondary = Color(0xFFCAD0E0),
     secondaryContainer = VesperSurfaceVariant,
-    onSecondaryContainer = Color(0xFFD5E2F4),
-    tertiary = VesperAccent,
-    onTertiary = Color(0xFF051414),
+    onSecondaryContainer = Color(0xFFD5DEF0),
+    tertiary = VesperGold,
+    onTertiary = Color(0xFF1A1508),
     background = VesperBackground,
-    onBackground = Color(0xFFE6EDF8),
+    onBackground = Color(0xFFE6E8F0),
     surface = VesperSurface,
-    onSurface = Color(0xFFE8EEF7),
+    onSurface = Color(0xFFE4E6EE),
     surfaceVariant = VesperSurfaceVariant,
-    onSurfaceVariant = Color(0xFF9EADC3),
-    outline = Color(0xFF34465E),
-    outlineVariant = Color(0xFF24354A),
+    onSurfaceVariant = Color(0xFF8E96AE),
+    outline = Color(0xFF2E3548),
+    outlineVariant = Color(0xFF1E2536),
     error = RiskHigh,
     onError = Color(0xFF200909)
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = VesperOrange,
-    onPrimary = Color(0xFF1A1B1C),
-    primaryContainer = Color(0xFFFFE3B0),
-    onPrimaryContainer = Color(0xFF4D3618),
+    primary = VesperWine,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFF5D6E4),
+    onPrimaryContainer = Color(0xFF4D1830),
     secondary = VesperSecondary,
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFDCE8F5),
-    onSecondaryContainer = Color(0xFF1D2A3A),
-    tertiary = VesperAccent,
-    onTertiary = Color(0xFF001211),
-    background = Color(0xFFF2F5FA),
-    onBackground = Color(0xFF121A25),
+    secondaryContainer = Color(0xFFDCE0F0),
+    onSecondaryContainer = Color(0xFF1A1F2E),
+    tertiary = VesperGold,
+    onTertiary = Color(0xFF1A1508),
+    background = Color(0xFFF4F2F5),
+    onBackground = Color(0xFF121520),
     surface = Color.White,
-    onSurface = Color(0xFF111821),
-    surfaceVariant = Color(0xFFE8EDF5),
-    onSurfaceVariant = Color(0xFF455A72),
-    outline = Color(0xFF61758E),
-    outlineVariant = Color(0xFFB4C0CE),
+    onSurface = Color(0xFF111420),
+    surfaceVariant = Color(0xFFEBE8EE),
+    onSurfaceVariant = Color(0xFF504862),
+    outline = Color(0xFF706680),
+    outlineVariant = Color(0xFFBEB4C8),
     error = RiskHigh,
     onError = Color.White
 )
 
 private val VesperShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),
-    small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(14.dp),
-    large = RoundedCornerShape(18.dp),
-    extraLarge = RoundedCornerShape(24.dp)
+    extraSmall = RoundedCornerShape(4.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(16.dp),
+    extraLarge = RoundedCornerShape(20.dp)
 )
 
 private val BaseTypography = androidx.compose.material3.Typography()
@@ -107,45 +129,57 @@ private val BaseTypography = androidx.compose.material3.Typography()
 val VesperTypography = BaseTypography.copy(
     displayLarge = TextStyle(
         fontFamily = FontFamily.Serif,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 56.sp,
-        letterSpacing = 0.8.sp
+        fontWeight = FontWeight.Light,
+        fontSize = 52.sp,
+        letterSpacing = 1.2.sp
     ),
     headlineLarge = TextStyle(
         fontFamily = FontFamily.Serif,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 32.sp,
-        letterSpacing = 0.4.sp
+        fontWeight = FontWeight.Normal,
+        fontSize = 30.sp,
+        letterSpacing = 0.6.sp
     ),
     titleLarge = TextStyle(
         fontFamily = FontFamily.Serif,
-        fontWeight = FontWeight.Medium,
-        fontSize = 22.sp,
-        letterSpacing = 0.2.sp
+        fontWeight = FontWeight.Normal,
+        fontSize = 21.sp,
+        letterSpacing = 0.3.sp
     ),
     titleMedium = TextStyle(
         fontFamily = FontFamily.Serif,
-        fontWeight = FontWeight.Medium,
-        fontSize = 17.sp,
-        letterSpacing = 0.15.sp
-    ),
-    bodyLarge = TextStyle(
-        fontFamily = FontFamily.Monospace,
         fontWeight = FontWeight.Normal,
         fontSize = 16.sp,
         letterSpacing = 0.2.sp
     ),
+    bodyLarge = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Normal,
+        fontSize = 15.sp,
+        letterSpacing = 0.15.sp
+    ),
     bodyMedium = TextStyle(
-        fontFamily = FontFamily.Monospace,
+        fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,
         fontSize = 14.sp,
-        letterSpacing = 0.15.sp
+        letterSpacing = 0.1.sp
     ),
     labelLarge = TextStyle(
         fontFamily = FontFamily.Monospace,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 13.sp,
-        letterSpacing = 0.4.sp
+        fontWeight = FontWeight.Medium,
+        fontSize = 12.sp,
+        letterSpacing = 1.5.sp
+    ),
+    labelMedium = TextStyle(
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Normal,
+        fontSize = 11.sp,
+        letterSpacing = 0.6.sp
+    ),
+    labelSmall = TextStyle(
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Normal,
+        fontSize = 10.sp,
+        letterSpacing = 0.5.sp
     )
 )
 

@@ -1,29 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Vesper Brand Colors -->
-    <color name="vesper_primary">#FF6B35</color>
-    <color name="vesper_primary_dark">#E55A2B</color>
-    <color name="vesper_secondary">#2D3748</color>
-    <color name="vesper_accent">#48BB78</color>
+    <!-- Vesper Brand Colors — Classy Mythic Cyberpunk Bond -->
+    <color name="vesper_primary">#8B2252</color>
+    <color name="vesper_primary_dark">#5E1637</color>
+    <color name="vesper_secondary">#1A1F2E</color>
+    <color name="vesper_accent">#D4AF37</color>
 
     <!-- Surface Colors -->
-    <color name="vesper_surface">#1A202C</color>
-    <color name="vesper_surface_variant">#2D3748</color>
-    <color name="vesper_background">#0D1117</color>
+    <color name="vesper_surface">#0E1118</color>
+    <color name="vesper_surface_variant">#161B28</color>
+    <color name="vesper_background">#060810</color>
 
     <!-- Text Colors -->
-    <color name="vesper_on_primary">#FFFFFF</color>
-    <color name="vesper_on_surface">#E2E8F0</color>
-    <color name="vesper_on_surface_variant">#A0AEC0</color>
+    <color name="vesper_on_primary">#F5E6EC</color>
+    <color name="vesper_on_surface">#E4E6EE</color>
+    <color name="vesper_on_surface_variant">#8E96AE</color>
 
     <!-- Risk Colors -->
-    <color name="risk_low">#48BB78</color>
-    <color name="risk_medium">#ECC94B</color>
-    <color name="risk_high">#F56565</color>
-    <color name="risk_blocked">#9F7AEA</color>
+    <color name="risk_low">#4CAF7D</color>
+    <color name="risk_medium">#D4AF37</color>
+    <color name="risk_high">#CF4455</color>
+    <color name="risk_blocked">#6B7394</color>
 
     <!-- Diff Colors -->
-    <color name="diff_added">#2F855A</color>
-    <color name="diff_removed">#C53030</color>
-    <color name="diff_changed">#B7791F</color>
+    <color name="diff_added">#3CBF88</color>
+    <color name="diff_removed">#CF4455</color>
+    <color name="diff_changed">#D4AF37</color>
 </resources>

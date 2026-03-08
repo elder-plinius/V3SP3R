@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -25,6 +26,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -121,13 +123,16 @@ fun ChatScreen(
                 title = {
                     Column {
                         Text(
-                            "Vesper",
-                            fontWeight = FontWeight.Bold
+                            "VESPER",
+                            fontWeight = FontWeight.Light,
+                            fontFamily = FontFamily.Serif,
+                            letterSpacing = 3.sp
                         )
                         Text(
-                            "AI-Driven Flipper Control",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            "Flipper Zero Command",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            letterSpacing = 1.sp
                         )
                     }
                 },
@@ -279,37 +284,66 @@ private fun EmptyChat() {
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Icon(
-                Icons.Default.Psychology,
-                contentDescription = null,
-                modifier = Modifier.size(64.dp),
-                tint = VesperOrange
+            // Barrel ring icon — matches logo aesthetic
+            Box(
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .background(VesperOrange.copy(alpha = 0.08f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape)
+                        .background(Color.Transparent)
+                        .then(
+                            Modifier.background(
+                                brush = Brush.radialGradient(
+                                    colors = listOf(VesperOrange.copy(alpha = 0.15f), Color.Transparent)
+                                )
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "V",
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Light,
+                        color = VesperOrange,
+                        fontFamily = FontFamily.Serif
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                "VESPER",
+                style = MaterialTheme.typography.labelLarge,
+                letterSpacing = 4.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
             )
             Text(
-                "Welcome to Vesper",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                "Ask me to manage files on your Flipper",
+                "Your Flipper. Your rules.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
             )
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
             Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 SuggestionChip("List files on the SD card")
-                SuggestionChip("Show device storage info")
-                SuggestionChip("Read my SubGHz captures")
+                SuggestionChip("Forge a Sub-GHz signal")
+                SuggestionChip("Install an app from FapHub")
             }
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             Text(
-                "Use voice or images for hands-free control",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                "Voice and image input supported",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
             )
         }
     }
@@ -319,12 +353,14 @@ private fun EmptyChat() {
 private fun SuggestionChip(text: String) {
     Surface(
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
     ) {
         Text(
             text = text,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            style = MaterialTheme.typography.bodyMedium
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
@@ -345,7 +381,7 @@ private fun ChatMessageItem(message: ChatMessage) {
                 modifier = Modifier
                     .size(32.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if (isAssistant) VesperOrange else MaterialTheme.colorScheme.secondary),
+                    .background(if (isAssistant) VesperGold else MaterialTheme.colorScheme.secondary),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -475,14 +511,14 @@ private fun ToolCallDisplay(toolCall: ToolCall) {
                     Icons.Default.Terminal,
                     contentDescription = null,
                     modifier = Modifier.size(14.dp),
-                    tint = VesperAccent
+                    tint = VesperGold
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     "execute_command",
                     style = MaterialTheme.typography.labelMedium,
                     fontFamily = FontFamily.Monospace,
-                    color = VesperAccent
+                    color = VesperGold
                 )
             }
         }
@@ -508,7 +544,7 @@ private fun LoadingIndicator(progress: AgentProgress?) {
             modifier = Modifier
                 .size(32.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(VesperOrange),
+                .background(VesperGold),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -521,7 +557,7 @@ private fun LoadingIndicator(progress: AgentProgress?) {
         Spacer(modifier = Modifier.width(8.dp))
         CircularProgressIndicator(
             modifier = Modifier.size(24.dp),
-            color = VesperOrange,
+            color = VesperGold,
             strokeWidth = 2.dp
         )
         Spacer(modifier = Modifier.width(8.dp))
@@ -544,7 +580,7 @@ private fun ToolResultDisplay(toolResult: ToolResult) {
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = if (parsed.success) {
-            VesperAccent.copy(alpha = 0.14f)
+            VesperGold.copy(alpha = 0.12f)
         } else {
             RiskHigh.copy(alpha = 0.14f)
         }
@@ -555,13 +591,13 @@ private fun ToolResultDisplay(toolResult: ToolResult) {
                     imageVector = if (parsed.success) Icons.Default.CheckCircle else Icons.Default.Error,
                     contentDescription = null,
                     modifier = Modifier.size(14.dp),
-                    tint = if (parsed.success) VesperAccent else RiskHigh
+                    tint = if (parsed.success) VesperGold else RiskHigh
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = parsed.title,
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (parsed.success) VesperAccent else RiskHigh
+                    color = if (parsed.success) VesperGold else RiskHigh
                 )
             }
 
@@ -743,7 +779,7 @@ private fun ChatInputBar(
                             when {
                                 isListening -> "Listening..."
                                 pendingImages.isNotEmpty() -> "Add a message..."
-                                else -> "Ask Vesper to control your Flipper..."
+                                else -> "Command your Flipper..."
                             }
                         )
                     },
