@@ -180,22 +180,13 @@ fun VesperApp() {
                         onNavigateToSettings = {
                             navController.navigate(Screen.Settings.route)
                         },
-                        onNavigateToArsenal = {
-                            navController.navigate(Screen.Arsenal.route)
-                        },
                         onNavigateToFiles = {
                             navController.navigate(Screen.Files.route)
-                        },
-                        onNavigateToPayloadLab = {
-                            navController.navigate(Screen.PayloadLab.route)
                         },
                         onNavigateToAudit = {
                             navController.navigate(Screen.Audit.route)
                         }
                     )
-                }
-                composable(Screen.Arsenal.route) {
-                    SignalArsenalScreen()
                 }
                 composable(Screen.Alchemy.route) {
                     AlchemyLabScreen()
@@ -214,11 +205,6 @@ fun VesperApp() {
                 }
                 composable(Screen.Device.route) {
                     DeviceScreen()
-                }
-                composable(Screen.PayloadLab.route) {
-                    PayloadLabScreen(
-                        onNavigateBack = { navController.popBackStack() }
-                    )
                 }
                 composable(Screen.Settings.route) {
                     SettingsScreen()

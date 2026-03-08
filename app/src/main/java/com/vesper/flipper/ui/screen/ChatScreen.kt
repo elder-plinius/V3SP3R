@@ -61,9 +61,7 @@ fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
     onNavigateToDevice: () -> Unit,
     onNavigateToSettings: () -> Unit,
-    onNavigateToArsenal: () -> Unit,
     onNavigateToFiles: () -> Unit,
-    onNavigateToPayloadLab: () -> Unit,
     onNavigateToAudit: () -> Unit
 ) {
     val conversationState by viewModel.conversationState.collectAsState()
@@ -237,24 +235,10 @@ fun ChatScreen(
                             onDismissRequest = { showOverflowMenu = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Signal Arsenal") },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    onNavigateToArsenal()
-                                }
-                            )
-                            DropdownMenuItem(
                                 text = { Text("File Browser") },
                                 onClick = {
                                     showOverflowMenu = false
                                     onNavigateToFiles()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Payload Lab") },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    onNavigateToPayloadLab()
                                 }
                             )
                             DropdownMenuItem(

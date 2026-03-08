@@ -152,11 +152,6 @@ Build custom RF signals from scratch:
 - Layer multiple signal patterns
 - Export directly to Flipper
 
-### Payload Lab
-Generate attack payloads:
-- **BadUSB**: AI-generated keystroke injection scripts
-- **Evil Portal**: Fake WiFi login pages
-
 ### Device
 Manage your Flipper connection:
 - Battery status
@@ -250,7 +245,6 @@ More advanced:
 │  ├── Chat Screen                        │
 │  ├── Ops Center                         │
 │  ├── Alchemy Lab                        │
-│  ├── Payload Lab                        │
 │  ├── File Browser                       │
 │  └── Device Screen                      │
 ├─────────────────────────────────────────┤
@@ -288,8 +282,7 @@ app/src/main/java/com/vesper/flipper/
 │   ├── screen/            # UI screens
 │   │   ├── ChatScreen.kt
 │   │   ├── OpsCenterScreen.kt
-│   │   ├── AlchemyLabScreen.kt
-│   │   └── PayloadLabScreen.kt
+│   │   └── AlchemyLabScreen.kt
 │   └── viewmodel/         # State management
 └── MainActivity.kt
 ```
