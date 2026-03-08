@@ -156,6 +156,49 @@ class OpenRouterClient @Inject constructor(
         lastError ?: ChatCompletionResult.Error("Unable to find a working model for tool execution.")
     }
 
+    /**
+     * Simple text-only chat without tool calling.
+     * Used by ForgeEngine for payload generation where we just need text output.
+     * Returns the AI's text response or null on failure.
+     */
+    suspend fun chatSimple(prompt: String): String? = withContext(Dispatchers.IO) {
+        if (!rateLimiter.tryAcquire()) return@withContext null
+
+        val apiKey = settingsStore.apiKey.first() ?: return@withContext null
+        if (!InputValidator.isValidApiKey(apiKey)) return@withContext null
+
+        val model = settingsStore.selectedModel.first()
+        val messages = listOf(
+            OpenRouterMessage.text(role = "user", content = prompt)
+        )
+
+        val request = OpenRouterRequest(
+            model = model,
+            messages = messages,
+            tools = null,
+            toolChoice = null,
+            maxTokens = FORGE_RESPONSE_MAX_TOKENS
+        )
+
+        val requestBody = json.encodeToString(request)
+            .toRequestBody("application/json".toMediaType())
+
+        val httpRequest = Request.Builder()
+            .url(OPENROUTER_API_URL)
+            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("HTTP-Referer", "https://vesper.flipper.app")
+            .addHeader("X-Title", "Vesper Flipper Control")
+            .post(requestBody)
+            .build()
+
+        val result = executeWithRetry(httpRequest)
+        when (result) {
+            is ChatCompletionResult.Success -> result.content.takeIf { it.isNotBlank() }
+            is ChatCompletionResult.Error -> null
+        }
+    }
+
     private fun buildToolCallingRequest(
         apiKey: String,
         model: String,
@@ -547,6 +590,9 @@ class OpenRouterClient @Inject constructor(
     private fun parseCommandAction(value: String): CommandAction? {
         val normalized = value
             .trim()
+            // Convert camelCase to snake_case before lowercasing:
+            // "forgePayload" → "forge_Payload" → "forge_payload"
+            .replace(Regex("([a-z])([A-Z])"), "$1_$2")
             .lowercase()
             .replace(Regex("[^a-z0-9]+"), "_")
             .trim('_')
@@ -851,6 +897,7 @@ class OpenRouterClient @Inject constructor(
         private const val TOOL_UNSUPPORTED_CACHE_MS = 5 * 60 * 1000L
         private const val MAX_CONTEXT_MESSAGES = 24
         private const val TOOL_CALL_RESPONSE_MAX_TOKENS = 4096
+        private const val FORGE_RESPONSE_MAX_TOKENS = 6144
         private const val DEFAULT_RESPONSE_MAX_TOKENS = 720
 
         private val SUPPORTED_ACTIONS = listOf(

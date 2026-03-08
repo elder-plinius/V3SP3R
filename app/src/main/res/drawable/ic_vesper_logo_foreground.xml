@@ -5,48 +5,21 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Outer hexagon — gold stroke, no fill -->
+    <!-- Single clean hexagon — thin gold stroke -->
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFCDAA63"
-        android:strokeWidth="2.5"
-        android:pathData="M54,16 L82,31 L82,77 L54,92 L26,77 L26,31 Z" />
+        android:strokeWidth="1.5"
+        android:pathData="M54,20 L78,34 L78,74 L54,88 L30,74 L30,34 Z" />
 
-    <!-- Inner hexagon — very dark fill -->
-    <path
-        android:fillColor="#EE08090E"
-        android:pathData="M54,22 L76,35 L76,73 L54,86 L32,73 L32,35 Z" />
-
-    <!-- Subtle inner hex border — faint gold -->
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#33CDAA63"
-        android:strokeWidth="0.8"
-        android:pathData="M54,22 L76,35 L76,73 L54,86 L32,73 L32,35 Z" />
-
-    <!-- Bold V letterform — gold -->
+    <!-- Minimal V letterform — sharp, tapered strokes -->
     <path
         android:fillColor="#FFCDAA63"
-        android:pathData="M38,33 L47,33 L54,58 L61,33 L70,33 L57,80 L51,80 Z" />
+        android:pathData="M40,36 L46,36 L54,62 L62,36 L68,36 L56,78 L52,78 Z" />
 
-    <!-- Left leg highlight — cyan reflection -->
-    <path
-        android:fillColor="#443ED9C8"
-        android:pathData="M40,36 L44,36 L53,68 L50,68 Z" />
-
-    <!-- Horizontal crossbar — lighter gold -->
-    <path
-        android:fillColor="#FFE8D5A0"
-        android:pathData="M44,47 L64,47 L60,51 L48,51 Z" />
-
-    <!-- Center power dot — cyan -->
+    <!-- Single accent dot — cyan, centered below V apex -->
     <path
         android:fillColor="#FF3ED9C8"
-        android:pathData="M54,60 m-2,0 a2,2 0 1,1 4,0 a2,2 0 1,1 -4,0" />
-
-    <!-- Subtle glow ring around dot -->
-    <path
-        android:fillColor="#1A3ED9C8"
-        android:pathData="M54,60 m-4.5,0 a4.5,4.5 0 1,1 9,0 a4.5,4.5 0 1,1 -9,0" />
+        android:pathData="M54,68 m-1.5,0 a1.5,1.5 0 1,1 3,0 a1.5,1.5 0 1,1 -3,0" />
 
 </vector>

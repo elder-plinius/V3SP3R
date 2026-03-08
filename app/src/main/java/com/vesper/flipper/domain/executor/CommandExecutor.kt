@@ -32,7 +32,8 @@ class CommandExecutor @Inject constructor(
     private val riskAssessor: RiskAssessor,
     private val permissionService: PermissionService,
     private val auditService: AuditService,
-    private val diffService: DiffService
+    private val diffService: DiffService,
+    private val forgeEngine: ForgeEngine
 ) {
 
     private val pendingApprovals = ConcurrentHashMap<String, PendingApproval>()
@@ -424,7 +425,11 @@ class CommandExecutor @Inject constructor(
             CommandAction.PUSH_ARTIFACT -> {
                 val path = command.args.path ?: throw IllegalArgumentException("Path required")
                 val data = command.args.artifactData ?: throw IllegalArgumentException("Artifact data required")
-                val bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT)
+                val bytes = try {
+                    android.util.Base64.decode(data, android.util.Base64.DEFAULT)
+                } catch (e: IllegalArgumentException) {
+                    throw IllegalArgumentException("Invalid Base64 artifact data: ${e.message}")
+                }
                 val bytesWritten = fileSystem.writeFileBytes(path, bytes).getOrThrow()
                 CommandResultData(bytesWritten = bytesWritten, message = "Artifact pushed: $path")
             }
@@ -723,128 +728,35 @@ class CommandExecutor @Inject constructor(
     )
 
     // ═══════════════════════════════════════════════════════
-    // FORGE PAYLOAD
+    // FORGE PAYLOAD — now powered by shared ForgeEngine
     // ═══════════════════════════════════════════════════════
 
-    private fun executeForgePayload(prompt: String, payloadType: String?): CommandResultData {
-        // Determine the payload type and generate appropriate file content
-        val resolvedType = payloadType?.uppercase()?.let {
-            runCatching { PayloadType.valueOf(it) }.getOrNull()
-        } ?: LootClassifier.detectPayloadType(prompt, "")
-
-        val blueprint = generateForgeBlueprint(prompt, resolvedType)
+    private suspend fun executeForgePayload(prompt: String, payloadType: String?): CommandResultData {
+        val result = forgeEngine.forge(prompt, payloadType)
+        val blueprint = result.blueprint
+        val validation = result.validation
 
         return CommandResultData(
             content = buildString {
                 appendLine("FORGE RESULT:")
-                appendLine("type=${resolvedType.name}")
+                appendLine("type=${blueprint.payloadType.name}")
                 appendLine("title=${blueprint.title}")
                 appendLine("filename=${blueprint.flipperPath}")
                 appendLine("rarity=${blueprint.rarity.name}")
+                if (result.usedFallback) {
+                    appendLine("note=Used offline template (AI was unavailable)")
+                }
+                if (validation.warnings.isNotEmpty()) {
+                    appendLine("warnings=${validation.warnings.joinToString("; ")}")
+                }
+                if (validation.errors.isNotEmpty()) {
+                    appendLine("validation_errors=${validation.errors.joinToString("; ")}")
+                }
                 appendLine("---PAYLOAD---")
                 append(blueprint.generatedCode)
             },
-            message = "Forged ${resolvedType.displayName} payload: ${blueprint.title}"
+            message = "Forged ${blueprint.payloadType.displayName} payload: ${blueprint.title}"
         )
-    }
-
-    private fun generateForgeBlueprint(prompt: String, type: PayloadType): ForgeBlueprint {
-        val promptLower = prompt.lowercase()
-        return when (type) {
-            PayloadType.BAD_USB -> ForgeBlueprint(
-                title = extractTitle(prompt, "BadUSB Script"),
-                description = prompt,
-                payloadType = type,
-                sections = listOf(
-                    BlueprintSection("Platform", "Windows"),
-                    BlueprintSection("Delay", "1000"),
-                    BlueprintSection("Description", prompt)
-                ),
-                generatedCode = buildString {
-                    appendLine("REM Auto-forged by Vesper AI")
-                    appendLine("REM Description: $prompt")
-                    appendLine("DELAY 2000")
-                    appendLine("REM TODO: AI will generate full script via chat")
-                },
-                flipperPath = "/ext/badusb/${sanitizeFilename(prompt)}.txt",
-                rarity = LootRarity.UNCOMMON
-            )
-            PayloadType.SUB_GHZ -> ForgeBlueprint(
-                title = extractTitle(prompt, "Sub-GHz Signal"),
-                description = prompt,
-                payloadType = type,
-                sections = listOf(
-                    BlueprintSection("Frequency", "433920000", fieldType = BlueprintFieldType.FREQUENCY),
-                    BlueprintSection("Preset", "FuriHalSubGhzPresetOok650Async"),
-                    BlueprintSection("Protocol", "RAW")
-                ),
-                generatedCode = buildString {
-                    appendLine("Filetype: Flipper SubGhz RAW File")
-                    appendLine("Version: 1")
-                    appendLine("Frequency: 433920000")
-                    appendLine("Preset: FuriHalSubGhzPresetOok650Async")
-                    appendLine("Protocol: RAW")
-                    appendLine("RAW_Data: 500 -500 500 -500")
-                },
-                flipperPath = "/ext/subghz/${sanitizeFilename(prompt)}.sub",
-                rarity = LootRarity.RARE
-            )
-            PayloadType.INFRARED -> ForgeBlueprint(
-                title = extractTitle(prompt, "IR Remote"),
-                description = prompt,
-                payloadType = type,
-                sections = listOf(
-                    BlueprintSection("Protocol", "NEC"),
-                    BlueprintSection("Address", "04 00 00 00", fieldType = BlueprintFieldType.HEX),
-                    BlueprintSection("Command", "08 00 00 00", fieldType = BlueprintFieldType.HEX)
-                ),
-                generatedCode = buildString {
-                    appendLine("Filetype: IR signals file")
-                    appendLine("Version: 1")
-                    appendLine("name: Power")
-                    appendLine("type: parsed")
-                    appendLine("protocol: NEC")
-                    appendLine("address: 04 00 00 00")
-                    appendLine("command: 08 00 00 00")
-                },
-                flipperPath = "/ext/infrared/${sanitizeFilename(prompt)}.ir",
-                rarity = LootRarity.UNCOMMON
-            )
-            PayloadType.NFC -> ForgeBlueprint(
-                title = extractTitle(prompt, "NFC Tag"),
-                description = prompt,
-                payloadType = type,
-                sections = listOf(
-                    BlueprintSection("Type", "NTAG215"),
-                    BlueprintSection("UID", "04 AB CD EF", fieldType = BlueprintFieldType.HEX)
-                ),
-                generatedCode = "Filetype: Flipper NFC device\nVersion: 4\nDevice type: NTAG215\nUID: 04 AB CD EF 12 34 80",
-                flipperPath = "/ext/nfc/${sanitizeFilename(prompt)}.nfc",
-                rarity = LootRarity.UNCOMMON
-            )
-            else -> ForgeBlueprint(
-                title = extractTitle(prompt, "Payload"),
-                description = prompt,
-                payloadType = type,
-                sections = listOf(BlueprintSection("Content", prompt)),
-                generatedCode = "# Forged by Vesper AI\n# $prompt",
-                flipperPath = "${type.flipperDir}/${sanitizeFilename(prompt)}${type.extension}",
-                rarity = LootRarity.COMMON
-            )
-        }
-    }
-
-    private fun extractTitle(prompt: String, fallback: String): String {
-        val words = prompt.split(" ").take(5).joinToString(" ")
-        return if (words.length > 40) words.take(37) + "..." else words.ifBlank { fallback }
-    }
-
-    private fun sanitizeFilename(input: String): String {
-        return input.lowercase()
-            .replace(Regex("[^a-z0-9]+"), "_")
-            .trim('_')
-            .take(32)
-            .ifBlank { "forged_payload" }
     }
 
     // ═══════════════════════════════════════════════════════

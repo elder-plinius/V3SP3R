@@ -2,8 +2,8 @@ package com.vesper.flipper.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.vesper.flipper.ai.VesperAgent
 import com.vesper.flipper.ble.FlipperFileSystem
+import com.vesper.flipper.domain.executor.ForgeEngine
 import com.vesper.flipper.domain.model.*
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -14,7 +14,7 @@ import kotlin.random.Random
 @HiltViewModel
 class AlchemyLabViewModel @Inject constructor(
     private val fileSystem: FlipperFileSystem,
-    private val vesperAgent: VesperAgent
+    private val forgeEngine: ForgeEngine
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════
@@ -122,21 +122,24 @@ class AlchemyLabViewModel @Inject constructor(
             _forgeError.value = null
 
             try {
-                // Use AI to generate blueprint
-                val result = vesperAgent.sendMessage(
-                    buildForgePrompt(input)
-                )
-
-                val aiResponse = result.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.content ?: ""
-
-                val blueprint = parseAIBlueprint(input, aiResponse)
+                val result = forgeEngine.forge(input)
+                val blueprint = result.blueprint
                 _currentBlueprint.value = blueprint
                 _forgeHistory.value = listOf(blueprint) + _forgeHistory.value.take(9)
 
+                if (result.validation.warnings.isNotEmpty()) {
+                    _message.value = "Warning: ${result.validation.warnings.first()}"
+                }
+                if (result.validation.errors.isNotEmpty()) {
+                    _forgeError.value = "Validation: ${result.validation.errors.joinToString("; ")}"
+                }
+                if (result.usedFallback) {
+                    _message.value = "Used offline template (AI unavailable)"
+                }
             } catch (e: Exception) {
                 _forgeError.value = "Forge failed: ${e.message}"
-                // Generate a fallback blueprint
-                _currentBlueprint.value = generateFallbackBlueprint(input)
+                val fallback = forgeEngine.fallback(input)
+                _currentBlueprint.value = fallback.blueprint
             } finally {
                 _isForging.value = false
             }
@@ -150,17 +153,26 @@ class AlchemyLabViewModel @Inject constructor(
             _currentBlueprint.value = blueprint.copy(status = ForgeStatus.FORGING)
 
             try {
+                // Ensure parent directory exists on the Flipper before writing
+                val dirPath = blueprint.flipperPath.substringBeforeLast("/")
+                if (dirPath.isNotEmpty() && dirPath != blueprint.flipperPath) {
+                    fileSystem.createDirectory(dirPath)
+                }
+
                 val result = fileSystem.writeFile(blueprint.flipperPath, blueprint.generatedCode)
+                // Re-read current blueprint to avoid overwriting edits made during deploy
+                val current = _currentBlueprint.value ?: blueprint
                 if (result.isSuccess) {
-                    _currentBlueprint.value = blueprint.copy(status = ForgeStatus.FORGED)
+                    _currentBlueprint.value = current.copy(status = ForgeStatus.FORGED)
                     _message.value = "Forged to ${blueprint.flipperPath}"
                     loadVault() // Refresh vault to show new loot
                 } else {
-                    _currentBlueprint.value = blueprint.copy(status = ForgeStatus.FAILED)
+                    _currentBlueprint.value = current.copy(status = ForgeStatus.FAILED)
                     _message.value = "Deploy failed: ${result.exceptionOrNull()?.message}"
                 }
             } catch (e: Exception) {
-                _currentBlueprint.value = blueprint.copy(status = ForgeStatus.FAILED)
+                val current = _currentBlueprint.value ?: blueprint
+                _currentBlueprint.value = current.copy(status = ForgeStatus.FAILED)
                 _message.value = "Deploy error: ${e.message}"
             }
         }
@@ -341,240 +353,6 @@ class AlchemyLabViewModel @Inject constructor(
 
     fun clearMessage() {
         _message.value = null
-    }
-
-    // ═══════════════════════════════════════════════════════
-    // AI PROMPT BUILDER
-    // ═══════════════════════════════════════════════════════
-
-    private fun buildForgePrompt(userRequest: String): String {
-        return """You are V3SP3R's Alchemy Lab AI forge. The user wants to craft a Flipper Zero payload.
-
-USER REQUEST: "$userRequest"
-
-Analyze the request and generate the EXACT file content for a Flipper Zero payload file.
-
-RESPOND IN THIS EXACT FORMAT (no extra text, just the structured output):
-
-TYPE: [one of: SUB_GHZ, INFRARED, NFC, RFID, BAD_USB, IBUTTON]
-TITLE: [short descriptive title]
-FILENAME: [filename with extension]
-RARITY: [COMMON, UNCOMMON, RARE, EPIC, or LEGENDARY]
-DESCRIPTION: [1-2 sentence description]
-SECTION:label=Frequency|value=433920000|editable=true|type=NUMBER
-SECTION:label=Protocol|value=RAW|editable=true|type=TEXT
----PAYLOAD---
-[exact file content for Flipper Zero]
----END---
-
-For SUB_GHZ: Generate valid .sub file format
-For INFRARED: Generate valid .ir file format
-For BAD_USB: Generate valid DuckyScript
-For NFC: Generate valid .nfc file format
-For RFID: Generate valid .rfid file format
-
-Generate real, working Flipper Zero payload content."""
-    }
-
-    private fun parseAIBlueprint(userInput: String, aiResponse: String): ForgeBlueprint {
-        val lines = aiResponse.lines()
-
-        var type = PayloadType.SUB_GHZ
-        var title = "Crafted Payload"
-        var filename = "forge_output.sub"
-        var rarity = LootRarity.COMMON
-        var description = "AI-crafted payload from: $userInput"
-        val sections = mutableListOf<BlueprintSection>()
-        var payloadContent = ""
-
-        var inPayload = false
-        val payloadLines = mutableListOf<String>()
-
-        for (line in lines) {
-            when {
-                inPayload -> {
-                    if (line.trim() == "---END---") {
-                        inPayload = false
-                        payloadContent = payloadLines.joinToString("\n")
-                    } else {
-                        payloadLines.add(line)
-                    }
-                }
-                line.trim() == "---PAYLOAD---" -> inPayload = true
-                line.startsWith("TYPE:") -> {
-                    val typeStr = line.substringAfter(":").trim()
-                    type = try { PayloadType.valueOf(typeStr) } catch (_: Exception) { PayloadType.SUB_GHZ }
-                }
-                line.startsWith("TITLE:") -> title = line.substringAfter(":").trim()
-                line.startsWith("FILENAME:") -> filename = line.substringAfter(":").trim()
-                line.startsWith("RARITY:") -> {
-                    val rarityStr = line.substringAfter(":").trim()
-                    rarity = try { LootRarity.valueOf(rarityStr) } catch (_: Exception) { LootRarity.COMMON }
-                }
-                line.startsWith("DESCRIPTION:") -> description = line.substringAfter(":").trim()
-                line.startsWith("SECTION:") -> {
-                    val sectionData = line.substringAfter("SECTION:")
-                    val params = sectionData.split("|").associate {
-                        val (k, v) = it.split("=", limit = 2)
-                        k to v
-                    }
-                    sections.add(
-                        BlueprintSection(
-                            label = params["label"] ?: "Field",
-                            value = params["value"] ?: "",
-                            editable = params["editable"]?.toBooleanStrictOrNull() ?: true,
-                            fieldType = try {
-                                BlueprintFieldType.valueOf(params["type"] ?: "TEXT")
-                            } catch (_: Exception) { BlueprintFieldType.TEXT }
-                        )
-                    )
-                }
-            }
-        }
-
-        // If payload parsing failed, use the whole response as content
-        if (payloadContent.isBlank()) {
-            payloadContent = aiResponse
-        }
-
-        val flipperPath = "${type.flipperDir}/${filename}"
-
-        return ForgeBlueprint(
-            title = title,
-            description = description,
-            payloadType = type,
-            sections = sections,
-            generatedCode = payloadContent,
-            flipperPath = flipperPath,
-            rarity = rarity
-        )
-    }
-
-    private fun generateFallbackBlueprint(userInput: String): ForgeBlueprint {
-        val lower = userInput.lowercase()
-        return when {
-            lower.contains("badusb") || lower.contains("bad usb") || lower.contains("ducky") || lower.contains("keystroke") -> {
-                ForgeBlueprint(
-                    title = "BadUSB Script",
-                    description = "Generated BadUSB script from: $userInput",
-                    payloadType = PayloadType.BAD_USB,
-                    sections = listOf(
-                        BlueprintSection("Script Type", "BadUSB / DuckyScript"),
-                        BlueprintSection("Target OS", "Windows", fieldType = BlueprintFieldType.DROPDOWN),
-                        BlueprintSection("Delay", "500", fieldType = BlueprintFieldType.NUMBER)
-                    ),
-                    generatedCode = buildString {
-                        appendLine("REM V3SP3R Alchemy Lab - BadUSB Payload")
-                        appendLine("REM Request: $userInput")
-                        appendLine("DELAY 1000")
-                        appendLine("GUI r")
-                        appendLine("DELAY 500")
-                        appendLine("STRING cmd")
-                        appendLine("ENTER")
-                        appendLine("DELAY 500")
-                        appendLine("STRING echo V3SP3R was here")
-                        appendLine("ENTER")
-                    },
-                    flipperPath = "/ext/badusb/vesper_script.txt",
-                    rarity = LootRarity.EPIC
-                )
-            }
-            lower.contains("sub") || lower.contains("433") || lower.contains("315") || lower.contains("garage") || lower.contains("signal") -> {
-                val freq = when {
-                    lower.contains("315") -> 315000000L
-                    lower.contains("868") -> 868350000L
-                    else -> 433920000L
-                }
-                ForgeBlueprint(
-                    title = "Sub-GHz Signal",
-                    description = "Generated Sub-GHz payload from: $userInput",
-                    payloadType = PayloadType.SUB_GHZ,
-                    sections = listOf(
-                        BlueprintSection("Frequency", freq.toString(), fieldType = BlueprintFieldType.FREQUENCY),
-                        BlueprintSection("Modulation", "OOK 650kHz"),
-                        BlueprintSection("Protocol", "RAW")
-                    ),
-                    generatedCode = buildString {
-                        appendLine("Filetype: Flipper SubGhz RAW File")
-                        appendLine("Version: 1")
-                        appendLine("# Generated by V3SP3R Alchemy Lab")
-                        appendLine("Frequency: $freq")
-                        appendLine("Preset: FuriHalSubGhzPresetOok650Async")
-                        appendLine("Protocol: RAW")
-                        appendLine("RAW_Data: 350 -350 350 -350 350 -350 350 -1050 350 -350 350 -1050")
-                    },
-                    flipperPath = "/ext/subghz/vesper_forge.sub",
-                    rarity = LootRarity.RARE
-                )
-            }
-            lower.contains("ir") || lower.contains("infrared") || lower.contains("remote") || lower.contains("tv") -> {
-                ForgeBlueprint(
-                    title = "IR Remote Signal",
-                    description = "Generated IR payload from: $userInput",
-                    payloadType = PayloadType.INFRARED,
-                    sections = listOf(
-                        BlueprintSection("Protocol", "NEC"),
-                        BlueprintSection("Address", "04", fieldType = BlueprintFieldType.HEX),
-                        BlueprintSection("Command", "08", fieldType = BlueprintFieldType.HEX)
-                    ),
-                    generatedCode = buildString {
-                        appendLine("Filetype: IR signals file")
-                        appendLine("Version: 1")
-                        appendLine("# Generated by V3SP3R Alchemy Lab")
-                        appendLine("#")
-                        appendLine("name: Power")
-                        appendLine("type: parsed")
-                        appendLine("protocol: NEC")
-                        appendLine("address: 04 00 00 00")
-                        appendLine("command: 08 00 00 00")
-                    },
-                    flipperPath = "/ext/infrared/vesper_remote.ir",
-                    rarity = LootRarity.UNCOMMON
-                )
-            }
-            lower.contains("nfc") || lower.contains("tag") || lower.contains("mifare") || lower.contains("ntag") -> {
-                ForgeBlueprint(
-                    title = "NFC Tag",
-                    description = "Generated NFC payload from: $userInput",
-                    payloadType = PayloadType.NFC,
-                    sections = listOf(
-                        BlueprintSection("Device Type", "NTAG215"),
-                        BlueprintSection("UID", "04 A1 B2 C3 D4 E5 F6", fieldType = BlueprintFieldType.HEX)
-                    ),
-                    generatedCode = buildString {
-                        appendLine("Filetype: Flipper NFC device")
-                        appendLine("Version: 4")
-                        appendLine("# Generated by V3SP3R Alchemy Lab")
-                        appendLine("Device type: NTAG215")
-                        appendLine("UID: 04 A1 B2 C3 D4 E5 F6")
-                        appendLine("ATQA: 44 00")
-                        appendLine("SAK: 00")
-                    },
-                    flipperPath = "/ext/nfc/vesper_tag.nfc",
-                    rarity = LootRarity.RARE
-                )
-            }
-            else -> {
-                ForgeBlueprint(
-                    title = "Custom Payload",
-                    description = userInput,
-                    payloadType = PayloadType.BAD_USB,
-                    sections = listOf(
-                        BlueprintSection("Type", "BadUSB"),
-                        BlueprintSection("Description", userInput)
-                    ),
-                    generatedCode = buildString {
-                        appendLine("REM V3SP3R Alchemy Lab")
-                        appendLine("REM $userInput")
-                        appendLine("DELAY 1000")
-                        appendLine("STRING $userInput")
-                        appendLine("ENTER")
-                    },
-                    flipperPath = "/ext/badusb/vesper_custom.txt",
-                    rarity = LootRarity.COMMON
-                )
-            }
-        }
     }
 
     // ═══════════════════════════════════════════════════════

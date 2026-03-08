@@ -1,40 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Base: deep dark background -->
+    <!-- Pure dark background — single solid color for clean minimalism -->
     <item>
         <shape android:shape="rectangle">
-            <gradient
-                android:angle="315"
-                android:startColor="#040508"
-                android:centerColor="#07090E"
-                android:endColor="#0A0D14" />
+            <solid android:color="#FF060810" />
         </shape>
     </item>
 
-    <!-- Warm gold radial glow (top-right, subtle) -->
+    <!-- Single subtle radial glow — warm gold, centered -->
     <item>
         <shape android:shape="rectangle">
             <gradient
                 android:type="radial"
-                android:gradientRadius="80dp"
-                android:centerX="0.62"
-                android:centerY="0.22"
-                android:startColor="#30CDAA63"
-                android:centerColor="#10CDAA63"
-                android:endColor="#00000000" />
-        </shape>
-    </item>
-
-    <!-- Cool cyan radial glow (bottom-left, very subtle) -->
-    <item>
-        <shape android:shape="rectangle">
-            <gradient
-                android:type="radial"
-                android:gradientRadius="60dp"
-                android:centerX="0.35"
-                android:centerY="0.80"
-                android:startColor="#183ED9C8"
-                android:centerColor="#083ED9C8"
+                android:gradientRadius="54dp"
+                android:centerX="0.5"
+                android:centerY="0.45"
+                android:startColor="#18CDAA63"
                 android:endColor="#00000000" />
         </shape>
     </item>
