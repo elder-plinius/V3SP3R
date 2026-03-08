@@ -59,8 +59,6 @@ import kotlinx.serialization.json.jsonPrimitive
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
-    onNavigateToDevice: () -> Unit,
-    onNavigateToSettings: () -> Unit,
     onNavigateToFiles: () -> Unit,
     onNavigateToAudit: () -> Unit
 ) {
@@ -176,43 +174,7 @@ fun ChatScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            "VESPER",
-                            fontWeight = FontWeight.Light,
-                            fontFamily = FontFamily.Serif,
-                            letterSpacing = 3.sp
-                        )
-                        Text(
-                            "Flipper Zero Command",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            letterSpacing = 1.sp
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onNavigateToDevice) {
-                        Icon(
-                            Icons.Default.Bluetooth,
-                            contentDescription = "Device",
-                            tint = VesperOrange
-                        )
-                    }
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(
-                            Icons.Default.Settings,
-                            contentDescription = "Settings",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    IconButton(onClick = { showHistoryDrawer = true }) {
-                        Icon(
-                            Icons.Default.History,
-                            contentDescription = "Chat History"
-                        )
-                    }
+                navigationIcon = {
                     IconButton(onClick = {
                         if (conversationState.messages.isNotEmpty()) {
                             showDeleteConfirmation = true
@@ -220,7 +182,41 @@ fun ChatScreen(
                     }) {
                         Icon(
                             Icons.Default.DeleteSweep,
-                            contentDescription = "Clear"
+                            contentDescription = "Clear Chat",
+                            tint = if (conversationState.messages.isNotEmpty())
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                        )
+                    }
+                },
+                title = {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        TextButton(onClick = { showHistoryDrawer = true }) {
+                            Icon(
+                                Icons.Default.History,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                "History",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Medium,
+                                letterSpacing = 1.sp
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.startNewSession() }) {
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = "New Chat",
+                            tint = VesperOrange
                         )
                     }
                     Box {

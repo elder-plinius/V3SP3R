@@ -174,12 +174,6 @@ fun VesperApp() {
             ) {
                 composable(Screen.Chat.route) {
                     ChatScreen(
-                        onNavigateToDevice = {
-                            navController.navigate(Screen.Device.route)
-                        },
-                        onNavigateToSettings = {
-                            navController.navigate(Screen.Settings.route)
-                        },
                         onNavigateToFiles = {
                             navController.navigate(Screen.Files.route)
                         },
