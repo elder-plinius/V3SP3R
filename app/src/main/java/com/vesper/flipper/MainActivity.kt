@@ -134,8 +134,16 @@ fun VesperApp() {
                     val navBackStackEntry by navController.currentBackStackEntryAsState()
                     val currentDestination = navBackStackEntry?.destination
 
+                    // Sub-screens launched from Chat's overflow menu
+                    val chatSubScreens = setOf(Screen.Files.route, Screen.Audit.route)
+                    val currentRoute = currentDestination?.route
+
                     screens.forEach { screen ->
-                        val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                        val selected = if (screen == Screen.Chat && currentRoute in chatSubScreens) {
+                            true  // Highlight Chat tab when on Files/Audit
+                        } else {
+                            currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                        }
 
                         NavigationBarItem(
                             icon = {
@@ -154,12 +162,17 @@ fun VesperApp() {
                                 unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                             ),
                             onClick = {
+                                val activeRoute = navController.currentBackStackEntry?.destination?.route
+                                // If already on this tab, do nothing
+                                if (activeRoute == screen.route) return@NavigationBarItem
                                 navController.navigate(screen.route) {
                                     popUpTo(navController.graph.findStartDestination().id) {
                                         saveState = true
                                     }
                                     launchSingleTop = true
-                                    restoreState = true
+                                    // Only restore state when switching between bottom-nav tabs,
+                                    // not when returning from sub-screens (Files, Audit)
+                                    restoreState = activeRoute in screens.map { it.route }
                                 }
                             }
                         )
