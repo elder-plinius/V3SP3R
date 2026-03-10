@@ -21,7 +21,7 @@ import com.vesper.flipper.data.SettingsStore
 import com.vesper.flipper.domain.model.Permission
 import com.vesper.flipper.ui.theme.*
 import com.vesper.flipper.ui.viewmodel.SettingsViewModel
-import com.vesper.flipper.voice.ElevenLabsTtsService
+import com.vesper.flipper.voice.OpenRouterTtsService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -399,42 +399,15 @@ fun SettingsScreen(
 
             // Voice / TTS Section
             item {
-                var showElevenLabsKey by remember { mutableStateOf(false) }
-
-                SettingsSection(title = "Voice (ElevenLabs TTS)") {
+                SettingsSection(title = "Voice (OpenRouter TTS)") {
                     SettingsSwitch(
                         title = "Enable Voice Output",
-                        subtitle = "Speak agent responses using ElevenLabs",
+                        subtitle = "Speak agent responses via OpenRouter audio",
                         checked = state.ttsEnabled,
                         onCheckedChange = { viewModel.setTtsEnabled(it) }
                     )
-
-                    Divider(modifier = Modifier.padding(vertical = 8.dp))
-
-                    OutlinedTextField(
-                        value = state.elevenLabsApiKey,
-                        onValueChange = { viewModel.setElevenLabsApiKey(it) },
-                        label = { Text("ElevenLabs API Key") },
-                        modifier = Modifier.fillMaxWidth(),
-                        visualTransformation = if (showElevenLabsKey) {
-                            VisualTransformation.None
-                        } else {
-                            PasswordVisualTransformation()
-                        },
-                        trailingIcon = {
-                            IconButton(onClick = { showElevenLabsKey = !showElevenLabsKey }) {
-                                Icon(
-                                    if (showElevenLabsKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = if (showElevenLabsKey) "Hide" else "Show"
-                                )
-                            }
-                        },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
-                    )
                     Text(
-                        text = "Free at elevenlabs.io — 10k characters/month.",
+                        text = "Uses your OpenRouter API key — no extra key needed.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -443,7 +416,7 @@ fun SettingsScreen(
 
                     // Voice Selection
                     var voiceExpanded by remember { mutableStateOf(false) }
-                    val currentVoice = ElevenLabsTtsService.AVAILABLE_VOICES
+                    val currentVoice = OpenRouterTtsService.AVAILABLE_VOICES
                         .find { it.id == state.ttsVoiceId }
 
                     ExposedDropdownMenuBox(
@@ -451,7 +424,7 @@ fun SettingsScreen(
                         onExpandedChange = { voiceExpanded = it }
                     ) {
                         OutlinedTextField(
-                            value = currentVoice?.let { "${it.name} — ${it.description}" } ?: "Charlotte",
+                            value = currentVoice?.let { "${it.name} — ${it.description}" } ?: "Shimmer",
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("Voice") },
@@ -467,7 +440,7 @@ fun SettingsScreen(
                             expanded = voiceExpanded,
                             onDismissRequest = { voiceExpanded = false }
                         ) {
-                            ElevenLabsTtsService.AVAILABLE_VOICES.forEach { voice ->
+                            OpenRouterTtsService.AVAILABLE_VOICES.forEach { voice ->
                                 DropdownMenuItem(
                                     text = {
                                         Column {

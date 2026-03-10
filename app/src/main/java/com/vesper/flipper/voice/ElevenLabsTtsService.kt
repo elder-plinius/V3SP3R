@@ -3,6 +3,7 @@ package com.vesper.flipper.voice
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.util.Base64
 import com.vesper.flipper.data.SettingsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -11,28 +12,31 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * ElevenLabs text-to-speech service with streaming audio playback.
- * Sends text to the ElevenLabs API and plays the returned audio in real-time.
+ * Text-to-speech service that routes through OpenRouter's audio-capable models.
+ * Uses the existing OpenRouter API key — no separate TTS key needed.
+ * Streams PCM audio from GPT-Audio for real-time playback.
  */
 @Singleton
-class ElevenLabsTtsService @Inject constructor(
+class OpenRouterTtsService @Inject constructor(
     private val settingsStore: SettingsStore
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
@@ -43,19 +47,17 @@ class ElevenLabsTtsService @Inject constructor(
     private var currentJob: Job? = null
 
     /**
-     * Speak the given text using ElevenLabs TTS.
+     * Speak the given text using OpenRouter's audio model.
      * Streams PCM audio for lowest-latency playback.
      */
     suspend fun speak(text: String) {
-        // Don't speak empty text
         if (text.isBlank()) return
 
-        // Stop any current playback
         stop()
 
-        val apiKey = settingsStore.elevenLabsApiKey.first()
+        val apiKey = settingsStore.apiKey.first()
         if (apiKey.isNullOrBlank()) {
-            _state.value = TtsState.Error("ElevenLabs API key not configured")
+            _state.value = TtsState.Error("OpenRouter API key not configured")
             return
         }
 
@@ -94,38 +96,45 @@ class ElevenLabsTtsService @Inject constructor(
     }
 
     /**
-     * Check if TTS is available (API key configured).
+     * Check if TTS is available (API key configured and TTS enabled).
      */
     suspend fun isAvailable(): Boolean {
         val enabled = settingsStore.ttsEnabled.first()
-        val apiKey = settingsStore.elevenLabsApiKey.first()
+        val apiKey = settingsStore.apiKey.first()
         return enabled && !apiKey.isNullOrBlank()
     }
 
     private suspend fun streamAndPlay(apiKey: String, voiceId: String, text: String) {
-        // Clean text for TTS: strip markdown artifacts, image descriptions, tool output
         val cleanedText = cleanTextForSpeech(text)
         if (cleanedText.isBlank()) {
             _state.value = TtsState.Idle
             return
         }
 
-        // Request PCM 24kHz 16-bit mono for direct AudioTrack playback (no decoder needed)
-        val requestJson = """
-            {
-                "text": ${escapeJson(cleanedText)},
-                "model_id": "eleven_flash_v2_5",
-                "voice_settings": {
-                    "stability": 0.5,
-                    "similarity_boost": 0.75,
-                    "style": 0.3
-                }
-            }
-        """.trimIndent()
+        // Build OpenRouter chat completion request with audio output modality
+        val requestJson = JSONObject().apply {
+            put("model", TTS_MODEL)
+            put("stream", true)
+            put("modalities", org.json.JSONArray().apply {
+                put("text")
+                put("audio")
+            })
+            put("audio", JSONObject().apply {
+                put("voice", voiceId)
+                put("format", "pcm16")
+            })
+            put("messages", org.json.JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", "Read the following text aloud naturally and expressively. " +
+                            "Do not add any commentary, just read the text:\n\n$cleanedText")
+                })
+            })
+        }.toString()
 
         val request = Request.Builder()
-            .url("$API_BASE/text-to-speech/$voiceId/stream?output_format=pcm_24000")
-            .addHeader("xi-api-key", apiKey)
+            .url(API_BASE)
+            .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Content-Type", "application/json")
             .post(requestJson.toRequestBody("application/json".toMediaType()))
             .build()
@@ -134,13 +143,13 @@ class ElevenLabsTtsService @Inject constructor(
 
         if (!response.isSuccessful) {
             val body = response.body?.string() ?: "Unknown error"
-            _state.value = TtsState.Error("ElevenLabs API error ${response.code}: $body")
+            _state.value = TtsState.Error("OpenRouter API error ${response.code}: $body")
             response.close()
             return
         }
 
         val inputStream = response.body?.byteStream() ?: run {
-            _state.value = TtsState.Error("Empty response from ElevenLabs")
+            _state.value = TtsState.Error("Empty response from OpenRouter")
             response.close()
             return
         }
@@ -175,22 +184,44 @@ class ElevenLabsTtsService @Inject constructor(
         audioTrack.play()
         _state.value = TtsState.Speaking
 
+        val reader = BufferedReader(InputStreamReader(inputStream))
         try {
-            val buffer = ByteArray(bufferSize)
-            var bytesRead: Int
-
-            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
                 if (!kotlinx.coroutines.coroutineContext.isActive) break
-                audioTrack.write(buffer, 0, bytesRead)
+
+                val currentLine = line ?: continue
+                if (!currentLine.startsWith("data: ")) continue
+                val data = currentLine.removePrefix("data: ").trim()
+                if (data == "[DONE]") break
+
+                try {
+                    val chunk = JSONObject(data)
+                    val delta = chunk
+                        .optJSONArray("choices")
+                        ?.optJSONObject(0)
+                        ?.optJSONObject("delta")
+                        ?: continue
+
+                    val audioData = delta.optJSONObject("audio")
+                        ?.optString("data")
+                        ?: continue
+
+                    if (audioData.isNotBlank()) {
+                        val pcmBytes = Base64.decode(audioData, Base64.NO_WRAP)
+                        audioTrack.write(pcmBytes, 0, pcmBytes.size)
+                    }
+                } catch (_: Exception) {
+                    // Skip malformed chunks
+                }
             }
 
-            // Wait for remaining audio to finish playing
-            // Write silence to flush the buffer
+            // Flush remaining audio
             withContext(Dispatchers.IO) {
                 audioTrack.write(ByteArray(bufferSize), 0, bufferSize)
             }
         } finally {
-            inputStream.close()
+            reader.close()
             response.close()
             try {
                 audioTrack.stop()
@@ -208,52 +239,34 @@ class ElevenLabsTtsService @Inject constructor(
      */
     private fun cleanTextForSpeech(text: String): String {
         return text
-            // Remove code blocks
             .replace(Regex("```[\\s\\S]*?```"), "")
-            // Remove inline code
             .replace(Regex("`[^`]+`"), "")
-            // Remove image descriptions from vision preprocessing
             .replace(Regex("\\[Attached image:.*?]"), "")
             .replace(Regex("\\[\\d+ image\\(s\\).*?]"), "")
-            // Remove markdown bold/italic
             .replace(Regex("\\*{1,3}([^*]+)\\*{1,3}"), "$1")
-            // Remove markdown headers
             .replace(Regex("^#{1,6}\\s+", RegexOption.MULTILINE), "")
-            // Remove markdown links [text](url)
             .replace(Regex("\\[([^]]+)]\\([^)]+\\)"), "$1")
-            // Remove markdown bullet points
             .replace(Regex("^\\s*[-*+]\\s+", RegexOption.MULTILINE), "")
-            // Collapse whitespace
             .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
     }
 
-    private fun escapeJson(text: String): String {
-        val escaped = text
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-        return "\"$escaped\""
-    }
-
     companion object {
-        private const val API_BASE = "https://api.elevenlabs.io/v1"
+        private const val API_BASE = "https://openrouter.ai/api/v1/chat/completions"
+        private const val TTS_MODEL = "openai/gpt-audio"
 
-        // Premade voice IDs
-        const val VOICE_CHARLOTTE = "iP95p4xoKVk53GoZ742B" // Swedish, seductive
-        const val VOICE_ALICE = "9BWtsMINqrJLrRacOk9x"     // British, confident
-        const val VOICE_ARIA = "pqHfZKP75CvOlQylNhV4"       // American, expressive
-        const val VOICE_SARAH = "EXAVITQu4vr4xnSDxMaL"      // American, soft
-        const val VOICE_LILY = "pFZP5JQG7iQjIQuC4Bku"       // British, warm
-
+        // OpenAI voices available through GPT-Audio
         val AVAILABLE_VOICES = listOf(
-            VoiceOption(VOICE_CHARLOTTE, "Charlotte", "Swedish, seductive"),
-            VoiceOption(VOICE_ALICE, "Alice", "British, confident"),
-            VoiceOption(VOICE_ARIA, "Aria", "American, expressive"),
-            VoiceOption(VOICE_SARAH, "Sarah", "American, soft"),
-            VoiceOption(VOICE_LILY, "Lily", "British, warm")
+            VoiceOption("shimmer", "Shimmer", "Soft, warm female"),
+            VoiceOption("coral", "Coral", "Friendly, natural female"),
+            VoiceOption("nova", "Nova", "Energetic young female"),
+            VoiceOption("sage", "Sage", "Calm, wise female"),
+            VoiceOption("alloy", "Alloy", "Neutral, versatile"),
+            VoiceOption("ballad", "Ballad", "Warm, expressive"),
+            VoiceOption("fable", "Fable", "British, storytelling"),
+            VoiceOption("echo", "Echo", "Smooth male"),
+            VoiceOption("ash", "Ash", "Confident male"),
+            VoiceOption("onyx", "Onyx", "Deep, authoritative male")
         )
     }
 }

@@ -15,7 +15,7 @@ import com.vesper.flipper.ble.FlipperDevice
 import com.vesper.flipper.data.database.ChatSessionSummary
 import com.vesper.flipper.domain.model.*
 import com.vesper.flipper.data.SettingsStore
-import com.vesper.flipper.voice.ElevenLabsTtsService
+import com.vesper.flipper.voice.OpenRouterTtsService
 import com.vesper.flipper.voice.SpeechRecognitionHelper
 import com.vesper.flipper.voice.SpeechState
 import com.vesper.flipper.voice.TtsState
@@ -31,7 +31,7 @@ import javax.inject.Inject
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val vesperAgent: VesperAgent,
-    private val ttsService: ElevenLabsTtsService,
+    private val ttsService: OpenRouterTtsService,
     private val settingsStore: SettingsStore,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
@@ -151,7 +151,7 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
-     * Speak text using ElevenLabs TTS
+     * Speak text using OpenRouter TTS
      */
     fun speakText(text: String) {
         viewModelScope.launch {
