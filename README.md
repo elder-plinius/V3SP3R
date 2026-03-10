@@ -64,8 +64,8 @@ sudo snap install android-studio --classic
 Open a terminal (or Git Bash on Windows):
 
 ```bash
-git clone https://github.com/LYS10S/PLIPPER.git
-cd PLIPPER
+git clone https://github.com/elder-plinius/V3SP3R.git
+cd V3SP3R
 ```
 
 **Don't have Git?**
@@ -76,7 +76,7 @@ cd PLIPPER
 ### Step 5: Build the App
 
 1. **Open Android Studio**
-2. Click **Open** and select the `PLIPPER` folder you downloaded
+2. Click **Open** and select the `V3SP3R` folder you downloaded
 3. Wait for it to sync (progress bar at bottom, takes 2-5 minutes)
 4. If it asks about Gradle, click **OK** or **Use default**
 
