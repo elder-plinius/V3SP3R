@@ -12,7 +12,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -188,7 +190,7 @@ class OpenRouterTtsService @Inject constructor(
         try {
             var line: String?
             while (reader.readLine().also { line = it } != null) {
-                if (!kotlinx.coroutines.coroutineContext.isActive) break
+                if (!coroutineContext.isActive) break
 
                 val currentLine = line ?: continue
                 if (!currentLine.startsWith("data: ")) continue
