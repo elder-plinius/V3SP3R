@@ -228,6 +228,56 @@ class SettingsStore @Inject constructor(
         }
     }
 
+    // Smart Glasses Bridge
+    private val GLASSES_ENABLED = booleanPreferencesKey("glasses_enabled")
+    private val GLASSES_BRIDGE_URL = stringPreferencesKey("glasses_bridge_url")
+    private val GLASSES_AUTO_SEND = booleanPreferencesKey("glasses_auto_send")
+    private val GLASSES_AUTO_CONNECT = booleanPreferencesKey("glasses_auto_connect")
+
+    val glassesEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[GLASSES_ENABLED] ?: false
+    }
+
+    suspend fun setGlassesEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[GLASSES_ENABLED] = enabled
+        }
+    }
+
+    val glassesBridgeUrl: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[GLASSES_BRIDGE_URL]
+    }
+
+    suspend fun setGlassesBridgeUrl(url: String?) {
+        context.dataStore.edit { preferences ->
+            if (url.isNullOrBlank()) {
+                preferences.remove(GLASSES_BRIDGE_URL)
+            } else {
+                preferences[GLASSES_BRIDGE_URL] = url
+            }
+        }
+    }
+
+    val glassesAutoSend: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[GLASSES_AUTO_SEND] ?: true
+    }
+
+    suspend fun setGlassesAutoSend(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[GLASSES_AUTO_SEND] = enabled
+        }
+    }
+
+    val glassesAutoConnect: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[GLASSES_AUTO_CONNECT] ?: false
+    }
+
+    suspend fun setGlassesAutoConnect(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[GLASSES_AUTO_CONNECT] = enabled
+        }
+    }
+
     companion object {
         // Default to the largest Hermes 4 model on OpenRouter.
         const val DEFAULT_MODEL = "nousresearch/hermes-4-405b"

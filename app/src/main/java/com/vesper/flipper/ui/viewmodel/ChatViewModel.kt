@@ -16,6 +16,10 @@ import com.vesper.flipper.data.database.ChatSessionSummary
 import com.vesper.flipper.domain.model.*
 import com.vesper.flipper.data.SettingsStore
 import com.vesper.flipper.voice.OpenRouterTtsService
+import com.vesper.flipper.glasses.BridgeState
+import com.vesper.flipper.glasses.GlassesIntegration
+import com.vesper.flipper.glasses.GlassesMessage
+import com.vesper.flipper.glasses.MessageType
 import com.vesper.flipper.voice.SpeechRecognitionHelper
 import com.vesper.flipper.voice.SpeechState
 import com.vesper.flipper.voice.TtsState
@@ -33,6 +37,7 @@ class ChatViewModel @Inject constructor(
     private val vesperAgent: VesperAgent,
     private val ttsService: OpenRouterTtsService,
     private val settingsStore: SettingsStore,
+    private val glassesIntegration: GlassesIntegration,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -58,6 +63,9 @@ class ChatViewModel @Inject constructor(
 
     // TTS state
     val ttsState: StateFlow<TtsState> = ttsService.state
+
+    // Smart glasses bridge state
+    val glassesBridgeState: StateFlow<BridgeState> = glassesIntegration.bridgeState
 
     init {
         // Listen for voice recognition results
@@ -105,6 +113,33 @@ class ChatViewModel @Inject constructor(
                     }
                 }
                 lastMessageCount = messages.size
+            }
+        }
+
+        // Auto-connect glasses bridge if configured
+        viewModelScope.launch {
+            val autoConnect = settingsStore.glassesAutoConnect.first()
+            val enabled = settingsStore.glassesEnabled.first()
+            if (autoConnect && enabled) {
+                val url = settingsStore.glassesBridgeUrl.first()
+                if (!url.isNullOrBlank()) {
+                    glassesIntegration.connect(url)
+                }
+            }
+        }
+
+        // Relay glasses transcriptions to input field when auto-send is off
+        viewModelScope.launch {
+            glassesIntegration.incomingMessages.collect { message ->
+                if (message.type == MessageType.VOICE_TRANSCRIPTION && message.isFinal) {
+                    val autoSend = settingsStore.glassesAutoSend.first()
+                    if (!autoSend) {
+                        // Append to input text for manual review
+                        val text = message.text?.trim() ?: return@collect
+                        val currentText = _inputText.value
+                        _inputText.value = if (currentText.isBlank()) text else "$currentText $text"
+                    }
+                }
             }
         }
     }
@@ -159,6 +194,30 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    // ==================== Smart Glasses ====================
+
+    /**
+     * Connect to a smart glasses bridge server.
+     */
+    fun connectGlasses(bridgeUrl: String) {
+        viewModelScope.launch {
+            settingsStore.setGlassesBridgeUrl(bridgeUrl)
+            glassesIntegration.connect(bridgeUrl)
+        }
+    }
+
+    /**
+     * Disconnect from the glasses bridge.
+     */
+    fun disconnectGlasses() {
+        glassesIntegration.disconnect()
+    }
+
+    /**
+     * Check if glasses are currently connected.
+     */
+    fun isGlassesConnected(): Boolean = glassesIntegration.isConnected()
+
     /**
      * Stop current TTS playback
      */
@@ -170,6 +229,7 @@ class ChatViewModel @Inject constructor(
         super.onCleared()
         speechRecognitionHelper.destroy()
         ttsService.stop()
+        glassesIntegration.disconnect()
     }
 
     fun updateInput(text: String) {

@@ -1,0 +1,20 @@
+{
+  "name": "vesper-mentra-bridge",
+  "version": "1.0.0",
+  "description": "MentraOS cloud app that bridges smart glasses to V3SP3R Android app",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.4.0"
+  }
+}
