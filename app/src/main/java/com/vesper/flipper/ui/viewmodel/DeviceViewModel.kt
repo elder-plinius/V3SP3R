@@ -3,7 +3,6 @@ package com.vesper.flipper.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vesper.flipper.ble.BleServiceManager
-import com.vesper.flipper.ble.CliCapabilityLevel
 import com.vesper.flipper.ble.CliCapabilityStatus
 import com.vesper.flipper.ble.CommandPipelineAutotuneStatus
 import com.vesper.flipper.ble.ConnectionCheckLevel
@@ -179,9 +178,9 @@ class DeviceViewModel @Inject constructor(
             refreshMutex.withLock {
                 _isRefreshing.value = true
                 try {
-                    if (_cliCapabilityStatus.value.level == CliCapabilityLevel.UNKNOWN) {
-                        _cliCapabilityStatus.value = bleServiceManager.probeCliCapability(force = false)
-                    }
+                    // Do NOT auto-probe the automation channel here.
+                    // CLI/RPC probing only runs when the user explicitly requests
+                    // diagnostics or when a command execution actually needs it.
                     fileSystem.getDeviceInfo().onSuccess { info ->
                         _deviceInfo.value = info
                     }

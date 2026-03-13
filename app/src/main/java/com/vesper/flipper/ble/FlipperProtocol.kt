@@ -1325,6 +1325,8 @@ class FlipperProtocol @Inject constructor() {
         private const val RPC_REMOTE_IMMEDIATE_RETRY_DELAY_MS = 12L
         private const val RPC_REMOTE_BOOTSTRAP_DELAY_MS = 90L
         private const val RPC_REMOTE_BOOTSTRAP_LOCK_TIMEOUT_MS = 450L
+        /** Hard cap on the total time a single CLI/RPC probe sequence can run. */
+        private const val CLI_PROBE_TOTAL_CAP_MS = 15_000L
         private const val DESKTOP_LOCK_PROBE_RETRY_MS = 30_000L
         private const val LEGACY_WRITE_BASE_TIMEOUT_MS = 7_500L
         private const val LEGACY_WRITE_PER_KIB_TIMEOUT_MS = 350L
@@ -1672,7 +1674,17 @@ class FlipperProtocol @Inject constructor() {
         }
     }
 
-    suspend fun probeCliAvailability(force: Boolean = false): CliCapabilityStatus = withCommandLock(
+    suspend fun probeCliAvailability(force: Boolean = false): CliCapabilityStatus {
+        // Hard cap: never let the entire probe sequence exceed CLI_PROBE_TOTAL_CAP_MS.
+        return withTimeoutOrNull(CLI_PROBE_TOTAL_CAP_MS) {
+            probeCliAvailabilityInner(force)
+        } ?: markProbeDeferred(
+            "CLI capability probe timed out after ${CLI_PROBE_TOTAL_CAP_MS / 1000}s. " +
+                    "Run diagnostics manually if needed."
+        )
+    }
+
+    private suspend fun probeCliAvailabilityInner(force: Boolean): CliCapabilityStatus = withCommandLock(
         operation = "CLI capability probe",
         onTimeout = {
             markProbeDeferred("CLI capability probe deferred; command pipeline is busy.")

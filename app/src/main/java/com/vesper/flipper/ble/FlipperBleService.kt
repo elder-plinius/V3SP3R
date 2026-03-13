@@ -60,7 +60,6 @@ class FlipperBleService : Service() {
     private var connectedUsbDevice: UsbDevice? = null
     private var usbReadJob: Job? = null
     private var bleKeepaliveJob: Job? = null
-    private var initialProbeJob: Job? = null
     private var usbReceiverRegistered = false
     private var broadScanStarted = false
 
@@ -1713,11 +1712,11 @@ class FlipperBleService : Service() {
         updateNotification()
         startBleKeepalive()
 
-        // Probe command transport immediately so UI/agent know if automation is actually ready.
-        // Store the job so runConnectionDiagnostics() can cancel it to avoid mutex contention.
-        initialProbeJob = serviceScope.launch {
+        // Enable overflow control but do NOT auto-probe the automation channel on connect.
+        // The CLI/RPC probe is expensive and should only run when the user explicitly
+        // requests diagnostics or when a command actually needs the automation channel.
+        serviceScope.launch {
             enableOverflowControl()
-            flipperProtocol.probeCliAvailability(force = false)
         }
     }
 
@@ -1823,13 +1822,6 @@ class FlipperBleService : Service() {
     }
 
     suspend fun runConnectionDiagnostics(): ConnectionDiagnosticsReport {
-        // Cancel any in-flight background probe from finalizeConnectedState() so it
-        // doesn't hold the command mutex while diagnostic checks are trying to acquire it.
-        // Without this, each diagnostic check can timeout (8s) waiting for the mutex,
-        // cascading into 40-60s of stalled probes reported as failures.
-        initialProbeJob?.cancel()
-        initialProbeJob = null
-
         return withContext(Dispatchers.IO) {
             val startedAt = System.currentTimeMillis()
             val checks = mutableListOf<ConnectionCheckResult>()
