@@ -68,7 +68,7 @@ export function broadcast(targets: WebSocket[], message: GlassesMessage) {
 
 // ==================== WebSocket Relay Server ====================
 
-const PORT = parseInt(process.env.PORT || "8090", 10);
+const PORT = parseInt(process.env.PORT || "3000", 10);
 const wss = new WebSocketServer({ port: PORT });
 
 console.log(`V3SP3R Glasses Bridge running on port ${PORT}`);
@@ -547,7 +547,7 @@ startMentraIntegration();
 
 // ==================== Health Check ====================
 
-const HTTP_PORT = parseInt(process.env.HTTP_PORT || "8091", 10);
+const HTTP_PORT = parseInt(process.env.HTTP_PORT || "3001", 10);
 
 const httpServer = createServer((req, res) => {
   if (req.url === "/health") {
