@@ -1102,7 +1102,7 @@ class OpenRouterClient @Inject constructor(
         val requestMessages = buildList {
             add(OpenRouterMessage.text(
                 role = "system",
-                content = customSystemPrompt ?: systemPrompt
+                content = customSystemPrompt ?: baseSystemPrompt
             ))
             addAll(sanitizeAndBuildRequestMessages(compactMessages))
         }
