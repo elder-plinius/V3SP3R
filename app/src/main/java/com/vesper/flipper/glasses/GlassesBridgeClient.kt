@@ -176,10 +176,13 @@ class GlassesBridgeClient @Inject constructor() {
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 try {
+                    Log.d(TAG, "Bridge raw: ${text.take(200)}")
                     val message = json.decodeFromString<GlassesMessage>(text)
+                    Log.d(TAG, "Parsed: type=${message.type}, hasImage=${message.imageBase64 != null}")
                     scope.launch { _incomingMessages.emit(message) }
                 } catch (e: Exception) {
                     Log.w(TAG, "Invalid message from bridge: ${e.message}")
+                    Log.w(TAG, "Raw message was: ${text.take(300)}")
                 }
             }
 
@@ -317,5 +320,8 @@ enum class MessageType {
     STATUS_UPDATE,
 
     // V3SP3R → Bridge (config sync)
-    CONFIG
+    CONFIG,
+
+    // Bridge → Glasses (photo request)
+    CAPTURE_REQUEST
 }
