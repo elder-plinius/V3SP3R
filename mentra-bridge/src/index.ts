@@ -174,6 +174,36 @@ function handleMessage(sender: WebSocket, message: GlassesMessage) {
 // Activated when MENTRA_API_KEY is set.
 // Uses @mentra/sdk v2.1.29 — verified API surface.
 
+/**
+ * Wait for the MentraOS session's internal WebSocket to be ready.
+ * The SDK fires onSession before the glasses WebSocket handshake completes,
+ * so calling session.layouts.showTextWall (→ AppSession.send) immediately
+ * throws "WebSocket connection not established".
+ *
+ * We poll a lightweight send to detect readiness (max ~5 seconds).
+ */
+async function waitForSessionReady(
+  session: any,
+  sessionId: string,
+  maxWaitMs = 5000,
+  intervalMs = 250
+): Promise<void> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    try {
+      // Probe with a short-lived text wall — if send() doesn't throw, we're ready
+      await session.layouts.showTextWall("", { durationMs: 1 });
+      return;
+    } catch {
+      // WebSocket not ready yet — wait and retry
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+  console.warn(
+    `[MentraOS] Session ${sessionId} WebSocket not ready after ${maxWaitMs}ms — proceeding anyway`
+  );
+}
+
 async function startMentraIntegration() {
   const apiKey = process.env.MENTRA_API_KEY;
   if (!apiKey) {
@@ -204,10 +234,21 @@ async function startMentraIntegration() {
           `[MentraOS] Session started: ${sessionId} (user: ${userId})`
         );
 
-        // Show welcome on glasses HUD
-        await session.layouts.showTextWall("V3SP3R Connected", {
-          durationMs: 3000,
-        });
+        // Wait for the SDK's internal WebSocket to the glasses to be ready.
+        // AppSession.send() throws synchronously if called before the
+        // connection is established, which would kill onSession entirely.
+        await waitForSessionReady(session, sessionId);
+
+        // Show welcome on glasses HUD (non-fatal — don't let this kill setup)
+        try {
+          await session.layouts.showTextWall("V3SP3R Connected", {
+            durationMs: 3000,
+          });
+        } catch (e) {
+          console.warn(
+            `[MentraOS] Welcome display failed (non-fatal): ${(e as Error).message}`
+          );
+        }
 
         // ── Wake word state ─────────────────────────────────────
         // "Hey Vesper" activates the agent. Two modes:
@@ -283,14 +324,22 @@ async function startMentraIntegration() {
                   console.log(`[MentraOS] Wake word timed out`);
                   awaitingCommand = false;
                   awaitingTimer = null;
-                  session.layouts
-                    .showTextWall("Vesper: timed out", { durationMs: 2000 })
-                    .catch(() => {});
+                  try {
+                    session.layouts
+                      .showTextWall("Vesper: timed out", { durationMs: 2000 })
+                      .catch(() => {});
+                  } catch {
+                    // Session WebSocket may have disconnected
+                  }
                 }, WAKE_TIMEOUT_MS);
 
-                session.layouts
-                  .showTextWall("Vesper: listening...", { durationMs: 3000 })
-                  .catch(() => {});
+                try {
+                  session.layouts
+                    .showTextWall("Vesper: listening...", { durationMs: 3000 })
+                    .catch(() => {});
+                } catch {
+                  // Session WebSocket may have disconnected
+                }
 
                 broadcast(getVesperClients(), {
                   type: "STATUS_UPDATE",
@@ -438,7 +487,9 @@ function checkVisionTrigger(session: any, text: string) {
 /** Capture a photo from glasses camera and send for vision analysis. */
 async function captureAndAnalyze(session: any, prompt: string) {
   try {
-    await session.layouts.showTextWall("Capturing...", { durationMs: 2000 });
+    try {
+      await session.layouts.showTextWall("Capturing...", { durationMs: 2000 });
+    } catch { /* WebSocket may not be ready */ }
 
     const photo = await session.camera.requestPhoto({
       metadata: { reason: "vesper-vision" },
@@ -454,7 +505,9 @@ async function captureAndAnalyze(session: any, prompt: string) {
       metadata: { source: "mentra" },
     });
 
-    await session.layouts.showTextWall("Analyzing...", { durationMs: 3000 });
+    try {
+      await session.layouts.showTextWall("Analyzing...", { durationMs: 3000 });
+    } catch { /* WebSocket may not be ready */ }
   } catch (e) {
     console.error("[MentraOS] Vision capture failed:", (e as Error).message);
   }
