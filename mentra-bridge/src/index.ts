@@ -635,12 +635,25 @@ async function captureAndAnalyze(session: any, prompt: string) {
       metadata: { reason: "vesper-vision" },
     });
 
-    if (!photo || !photo.photoData) {
-      console.error("[MentraOS] Photo request returned empty data");
+    if (!photo) {
+      console.error("[MentraOS] Photo request returned null");
       return;
     }
 
-    const imageBase64 = Buffer.from(photo.photoData).toString("base64");
+    // Mentra SDK returns photo data under varying field names depending on version.
+    // Try all known fields: photoData (docs), data, buffer, image, photo
+    const rawData = photo.photoData ?? photo.data ?? photo.buffer ?? photo.image ?? photo.photo;
+
+    if (!rawData) {
+      console.error("[MentraOS] Photo object has no recognizable data field. Keys:", Object.keys(photo).join(", "));
+      // If the SDK returned a URL instead of raw bytes, log it
+      if (photo.url || photo.photoUrl) {
+        console.log("[MentraOS] Photo may be URL-based:", photo.url || photo.photoUrl);
+      }
+      return;
+    }
+
+    const imageBase64 = Buffer.from(rawData).toString("base64");
     console.log(`[MentraOS] Photo received: ${imageBase64.length} chars, mime: ${photo.mimeType || "image/jpeg"}`);
 
     broadcast(getVesperClients(), {

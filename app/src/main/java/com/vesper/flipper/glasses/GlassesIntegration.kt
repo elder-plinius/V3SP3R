@@ -455,34 +455,36 @@ class GlassesIntegration @Inject constructor(
      * Narrate agent progress through glasses — key moments with enough
      * feedback that the user knows things are working, without being chatty.
      */
-    private fun handleProgressUpdate(progress: AgentProgress) {
+    private suspend fun handleProgressUpdate(progress: AgentProgress) {
         // Avoid repeating the exact same stage + detail combo
         if (progress.stage == lastSpokenProgressStage &&
             progress.detail == lastSpokenProgressDetail) return
         lastSpokenProgressStage = progress.stage
         lastSpokenProgressDetail = progress.detail
 
+        val sailor = settingsStore.glassesSailorMouth.first()
+
         val narration = when (progress.stage) {
             AgentProgressStage.MODEL_REQUEST -> {
-                // First model call = "thinking", subsequent = brief context
                 if (progress.detail?.contains("Summarizing") == true) null
-                else "Thinking..."
+                else if (sailor) sailorNarration("thinking") else "Thinking..."
             }
             AgentProgressStage.TOOL_PLANNED -> {
-                // "Running 3 tool calls..." — let user know work is happening
-                progress.detail?.let { briefNarration(it) }
+                val clean = progress.detail?.let { briefNarration(it) }
+                if (sailor && clean != null) sailorNarration("planned", clean) else clean
             }
             AgentProgressStage.TOOL_EXECUTING -> {
-                // "Executing read_file..." — narrate the action
-                progress.detail?.let { briefNarration(it) }
+                val clean = progress.detail?.let { briefNarration(it) }
+                if (sailor && clean != null) sailorNarration("executing", clean) else clean
             }
             AgentProgressStage.TOOL_COMPLETED -> {
-                // Only narrate failures — successes flow into the next stage naturally
-                if (progress.detail?.contains("failed", ignoreCase = true) == true) {
-                    progress.detail?.let { briefNarration(it) }
+                val isFail = progress.detail?.contains("failed", ignoreCase = true) == true
+                if (isFail) {
+                    val clean = progress.detail?.let { briefNarration(it) }
+                    if (sailor && clean != null) sailorNarration("failed", clean) else clean
                 } else null
             }
-            AgentProgressStage.WAITING_APPROVAL -> null // Handled by approval listener
+            AgentProgressStage.WAITING_APPROVAL -> null
         } ?: return
 
         Log.d(TAG, "Glasses narration: $narration")
@@ -491,14 +493,47 @@ class GlassesIntegration @Inject constructor(
 
     /**
      * Clean up a progress detail string for brief spoken narration.
-     * Strips technical noise and keeps it under ~60 chars.
      */
     private fun briefNarration(detail: String): String {
         return detail
-            .replace(Regex("\\(.*?\\)"), "")  // strip "(3/10)" iteration counts
+            .replace(Regex("\\(.*?\\)"), "")
             .replace("...", "")
             .trim()
             .take(60)
+    }
+
+    /**
+     * Generate a sailor-mouth flavored narration for a progress stage.
+     */
+    private fun sailorNarration(stage: String, detail: String? = null): String {
+        return when (stage) {
+            "thinking" -> listOf(
+                "hold on, thinking...",
+                "gimme a sec, working on it",
+                "cooking something up...",
+                "let me figure this shit out",
+                "brain's churning, one sec"
+            ).random()
+            "planned" -> listOf(
+                "alright, firing up $detail",
+                "let's fucking go, $detail",
+                "kicking off $detail",
+                "time to roll, $detail"
+            ).random()
+            "executing" -> listOf(
+                "doing the thing, $detail",
+                "on it, $detail",
+                "running $detail, hold tight",
+                "executing $detail, baby"
+            ).random()
+            "failed" -> listOf(
+                "shit, $detail",
+                "well that's fucked, $detail",
+                "goddammit, $detail",
+                "oh hell, $detail"
+            ).random()
+            else -> detail ?: "working on it"
+        }
     }
 
     /**
