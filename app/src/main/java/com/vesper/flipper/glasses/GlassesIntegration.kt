@@ -219,7 +219,6 @@ class GlassesIntegration @Inject constructor(
 
         // Expose photo to UI as pending
         _pendingGlassesPhoto.value = attachment
-        bridge.sendStatus("Photo received — say a command or type to combine")
 
         // Start a timeout: if no directive arrives, auto-send with default prompt
         photoHoldJob = scope.launch {
@@ -232,7 +231,6 @@ class GlassesIntegration @Inject constructor(
                     userMessage = promptText ?: "What am I looking at?",
                     imageAttachments = listOf(attachment)
                 )
-                bridge.sendStatus("Analyzing image...")
             }
         }
     }
@@ -306,10 +304,10 @@ class GlassesIntegration @Inject constructor(
                 userMessage = text,
                 imageAttachments = listOf(photo)
             )
-            bridge.sendStatus("Processing with image: \"${text.take(40)}\"")
+            // Skip verbose status — "Thinking..." will narrate via progress listener
         } else {
             vesperAgent.sendMessage(userMessage = text)
-            bridge.sendStatus("Processing: \"${text.take(50)}\"")
+            // Skip verbose status — "Thinking..." will narrate via progress listener
         }
     }
 
@@ -325,7 +323,7 @@ class GlassesIntegration @Inject constructor(
     /**
      * Watch VesperAgent conversation state for new assistant messages
      * and relay them to glasses for TTS + HUD display.
-     * Final responses (no tool calls) are spoken aloud through the glasses.
+     * Sends a brief summary for TTS (≤2 sentences) and the full text for HUD.
      */
     private suspend fun handleConversationUpdate(state: ConversationState) {
         if (!bridge.isConnected()) return
@@ -344,8 +342,9 @@ class GlassesIntegration @Inject constructor(
             lastMsg.content.isNotBlank() &&
             lastMsg.toolCalls.isNullOrEmpty()
         ) {
-            // Final response — speak it through glasses
-            bridge.sendResponse(lastMsg.content)
+            // Summarize for TTS — first 2 sentences, max ~120 chars spoken
+            val spokenText = summarizeForSpeech(lastMsg.content)
+            bridge.sendResponse(spokenText)
             clearApprovalState()
         }
 
@@ -353,20 +352,56 @@ class GlassesIntegration @Inject constructor(
     }
 
     /**
-     * Narrate agent progress through glasses so the user hears what's happening.
-     * Only speaks key transitions, not every micro-update.
+     * Extract the first 1-2 sentences from a response for brief TTS.
+     * Targets ~5 seconds of speech (~15 words / ~120 chars).
+     */
+    private fun summarizeForSpeech(text: String): String {
+        // Strip markdown formatting
+        val clean = text
+            .replace(Regex("```[\\s\\S]*?```"), "")
+            .replace(Regex("\\[.*?]\\(.*?\\)"), "")
+            .replace(Regex("[*_~`#>]"), "")
+            .replace(Regex("\\n+"), " ")
+            .trim()
+
+        if (clean.length <= 120) return clean
+
+        // Grab up to 2 sentences
+        val sentenceEnds = Regex("[.!?]\\s+|[.!?]$")
+        var endIndex = -1
+        var sentenceCount = 0
+        sentenceEnds.findAll(clean).forEach { match ->
+            if (sentenceCount < 2 && match.range.first < 200) {
+                endIndex = match.range.first + 1
+                sentenceCount++
+            }
+        }
+
+        return if (endIndex > 0 && endIndex <= 200) {
+            clean.substring(0, endIndex).trim()
+        } else {
+            // No sentence boundary found — cut at word boundary near 120 chars
+            val cutoff = clean.take(120).lastIndexOf(' ')
+            if (cutoff > 40) clean.substring(0, cutoff).trim() + "."
+            else clean.take(120).trim() + "."
+        }
+    }
+
+    /**
+     * Narrate agent progress through glasses — only key moments.
+     * Skips intermediate stages to avoid rapid-fire chatter.
      */
     private fun handleProgressUpdate(progress: AgentProgress) {
         // Avoid repeating the same stage
         if (progress.stage == lastSpokenProgressStage) return
         lastSpokenProgressStage = progress.stage
 
+        // Only narrate start (thinking) and completion — skip intermediate stages
         val narration = when (progress.stage) {
             AgentProgressStage.MODEL_REQUEST -> "Thinking..."
-            AgentProgressStage.TOOL_PLANNED -> progress.detail ?: "Planning actions..."
-            AgentProgressStage.TOOL_EXECUTING -> progress.detail ?: "Executing on Flipper..."
-            AgentProgressStage.TOOL_COMPLETED -> progress.detail ?: "Action complete."
-            AgentProgressStage.WAITING_APPROVAL -> return // Handled separately in handleApprovalRequest
+            AgentProgressStage.TOOL_COMPLETED -> "Done."
+            AgentProgressStage.WAITING_APPROVAL -> return // Handled separately
+            else -> return // Skip TOOL_PLANNED and TOOL_EXECUTING to reduce chatter
         }
 
         Log.d(TAG, "Glasses narration: $narration")
