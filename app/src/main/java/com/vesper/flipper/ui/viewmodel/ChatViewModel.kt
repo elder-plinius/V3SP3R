@@ -107,7 +107,8 @@ class ChatViewModel @Inject constructor(
                     ) {
                         val autoSpeak = settingsStore.ttsAutoSpeak.first()
                         val ttsEnabled = settingsStore.ttsEnabled.first()
-                        if (autoSpeak && ttsEnabled) {
+                        val glassesActive = glassesIntegration.isConnected()
+                        if (autoSpeak && ttsEnabled && !glassesActive) {
                             speakText(lastMsg.content)
                         }
                     }
@@ -219,6 +220,8 @@ class ChatViewModel @Inject constructor(
     fun connectGlasses(bridgeUrl: String) {
         viewModelScope.launch {
             try {
+                // Stop phone TTS — glasses will handle speech from now on
+                ttsService.stop()
                 settingsStore.setGlassesBridgeUrl(bridgeUrl)
                 glassesIntegration.connect(bridgeUrl)
             } catch (e: Exception) {
