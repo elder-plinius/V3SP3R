@@ -213,11 +213,13 @@ class GlassesIntegration @Inject constructor(
         val glassesEnabled = settingsStore.glassesEnabled.first()
         if (!glassesEnabled) return
 
+        Log.d(TAG, "Glasses message: type=${message.type}, hasImage=${message.imageBase64 != null}, text=${message.text?.take(40)}")
+
         when (message.type) {
             MessageType.VOICE_TRANSCRIPTION -> handleVoiceTranscription(message)
             MessageType.CAMERA_PHOTO -> handleCameraPhoto(message)
             MessageType.VOICE_COMMAND -> handleVoiceCommand(message)
-            else -> { /* Outbound message types — ignore */ }
+            else -> { Log.d(TAG, "Ignoring message type: ${message.type}") }
         }
     }
 

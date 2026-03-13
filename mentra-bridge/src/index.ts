@@ -27,7 +27,8 @@ interface GlassesMessage {
     | "VOICE_COMMAND"
     | "AI_RESPONSE"
     | "STATUS_UPDATE"
-    | "CONFIG";
+    | "CONFIG"
+    | "CAPTURE_REQUEST";
   text?: string;
   imageBase64?: string;
   imageMimeType?: string;
@@ -271,6 +272,24 @@ function handleMessage(sender: WebSocket, message: GlassesMessage) {
         break;
       }
       broadcast(getVesperClients(), message);
+
+      // Relay mode vision trigger: ask glasses to capture a photo
+      if (message.text) {
+        const lower = message.text.toLowerCase();
+        const visionTriggers = [
+          "what am i looking at", "what do you see", "what is this",
+          "analyze this", "scan this", "identify this",
+          "take a photo", "take a picture", "capture this",
+        ];
+        if (visionTriggers.some((t) => lower.includes(t))) {
+          console.log("[Relay] Vision trigger detected, requesting photo from glasses");
+          broadcast(getGlassesClients(), {
+            type: "CAPTURE_REQUEST" as any,
+            text: message.text,
+            metadata: { reason: "vision-trigger" },
+          });
+        }
+      }
       break;
 
     case "CAMERA_PHOTO":
@@ -544,26 +563,84 @@ async function startMentraIntegration() {
 
         // ── Camera events → V3SP3R ───────────────────────────────
         try {
-          session.events.onPhotoTaken(
-            (data: Record<string, any>) => {
-              const rawData = data.photoData ?? data.data ?? data.buffer ?? data.image ?? data.photo;
-              if (!rawData) {
-                console.error("[MentraOS] onPhotoTaken: no data field. Keys:", Object.keys(data).join(", "));
-                return;
-              }
-              const imageBase64 = Buffer.from(rawData).toString("base64");
-              console.log(`[MentraOS] Photo captured: ${imageBase64.length} chars base64`);
+          if (session.events && typeof session.events.onPhotoTaken === "function") {
+            session.events.onPhotoTaken(
+              (data: Record<string, any>) => {
+                console.log("[MentraOS] onPhotoTaken fired! Keys:", Object.keys(data).join(", "));
+                const rawData = data.photoData ?? data.data ?? data.buffer ?? data.image ?? data.photo;
+                if (!rawData) {
+                  console.error("[MentraOS] onPhotoTaken: no data field. Keys:", Object.keys(data).join(", "));
+                  // Log all values for debugging
+                  for (const [k, v] of Object.entries(data)) {
+                    const preview = typeof v === "string" ? v.slice(0, 80) : `[${typeof v}]`;
+                    console.error(`  data.${k} = ${preview}`);
+                  }
+                  return;
+                }
+                const imageBase64 = Buffer.from(rawData).toString("base64");
+                console.log(`[MentraOS] Photo captured: ${imageBase64.length} chars base64`);
 
+                broadcast(getVesperClients(), {
+                  type: "CAMERA_PHOTO",
+                  text: "What am I looking at?",
+                  imageBase64,
+                  imageMimeType: "image/jpeg",
+                  metadata: { source: "mentra", sessionId },
+                });
+              }
+            );
+            console.log(`[MentraOS] Photo listener registered via session.events.onPhotoTaken`);
+          } else {
+            console.warn(`[MentraOS] session.events.onPhotoTaken not available`);
+            console.warn(`  session.events exists: ${!!session.events}`);
+            if (session.events) {
+              console.warn(`  Available events: ${Object.keys(session.events).join(", ")}`);
+            }
+
+            // Fallback: try alternate camera event names
+            const altEvents = ["onCameraCapture", "onImageCapture", "onPhoto", "onSnapshot"];
+            for (const evtName of altEvents) {
+              if (session.events && typeof session.events[evtName] === "function") {
+                console.log(`[MentraOS] Found alternate event: session.events.${evtName} — registering`);
+                session.events[evtName]((data: Record<string, any>) => {
+                  console.log(`[MentraOS] ${evtName} fired! Keys:`, Object.keys(data).join(", "));
+                  const rawData = data.photoData ?? data.data ?? data.buffer ?? data.image ?? data.photo;
+                  if (!rawData) {
+                    console.error(`[MentraOS] ${evtName}: no data. Keys:`, Object.keys(data).join(", "));
+                    return;
+                  }
+                  const imageBase64 = Buffer.from(rawData).toString("base64");
+                  console.log(`[MentraOS] Alt photo captured: ${imageBase64.length} chars base64`);
+                  broadcast(getVesperClients(), {
+                    type: "CAMERA_PHOTO",
+                    text: "What am I looking at?",
+                    imageBase64,
+                    imageMimeType: "image/jpeg",
+                    metadata: { source: "mentra", sessionId },
+                  });
+                });
+                break;
+              }
+            }
+          }
+
+          // Also try registering via session.camera.onCapture if available
+          if (session.camera && typeof session.camera.onCapture === "function") {
+            console.log("[MentraOS] Registering session.camera.onCapture listener");
+            session.camera.onCapture((photo: Record<string, any>) => {
+              console.log("[MentraOS] camera.onCapture fired! Keys:", Object.keys(photo).join(", "));
+              const rawData = photo.photoData ?? photo.data ?? photo.buffer ?? photo.image ?? photo.photo;
+              if (!rawData) return;
+              const imageBase64 = Buffer.from(rawData).toString("base64");
               broadcast(getVesperClients(), {
                 type: "CAMERA_PHOTO",
                 text: "What am I looking at?",
                 imageBase64,
-                imageMimeType: "image/jpeg",
+                imageMimeType: photo.mimeType || "image/jpeg",
                 metadata: { source: "mentra", sessionId },
               });
-            }
-          );
-          console.log(`[MentraOS] Photo listener registered`);
+            });
+          }
         } catch (e) {
           console.warn(`[MentraOS] Failed to register photo listener: ${(e as Error).message}`);
         }
@@ -660,16 +737,38 @@ async function captureAndAnalyze(session: any, prompt: string) {
     } catch { /* WebSocket may not be ready */ }
 
     // Check if camera API is available
-    if (!session.camera || typeof session.camera.requestPhoto !== "function") {
-      console.error("[MentraOS] Camera API not available on this session");
+    if (!session.camera) {
+      console.error("[MentraOS] session.camera is missing entirely");
+      console.error("  session keys:", Object.keys(session).join(", "));
       try {
         await session.layouts.showTextWall("Camera not available", { durationMs: 3000 });
       } catch { /* ignore */ }
       return;
     }
 
+    // Log available camera methods
+    const cameraMethods = Object.keys(session.camera).filter(
+      (k) => typeof session.camera[k] === "function"
+    );
+    console.log("[MentraOS] Camera API methods:", cameraMethods.join(", ") || "(none)");
+
+    // Try multiple known method names
+    const captureMethod = session.camera.requestPhoto
+      ?? session.camera.capture
+      ?? session.camera.takePhoto
+      ?? session.camera.snap;
+
+    if (typeof captureMethod !== "function") {
+      console.error("[MentraOS] No known capture method found on session.camera");
+      console.error("  Available:", Object.keys(session.camera).join(", "));
+      try {
+        await session.layouts.showTextWall("Camera API unsupported", { durationMs: 3000 });
+      } catch { /* ignore */ }
+      return;
+    }
+
     console.log("[MentraOS] Requesting photo from glasses camera...");
-    const photo = await session.camera.requestPhoto({
+    const photo = await captureMethod.call(session.camera, {
       metadata: { reason: "vesper-vision" },
     });
 
