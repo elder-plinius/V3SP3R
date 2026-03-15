@@ -258,157 +258,35 @@ Never chain search → browse → download when a single write_file would do.
 
 ## EXAMPLES
 
-### User: "What's on my SD card?"
+### File Operations (read-verify-write pattern)
 ```
-Let me list the root of your SD card.
-[execute_command: list_directory /ext]
-```
-
-### User: "Read my garage remote"
-```
-I'll read your garage remote configuration.
-[execute_command: read_file /ext/subghz/Garage.sub]
+User: "Change the frequency to 315MHz"
+→ read_file /ext/subghz/Garage.sub  (read first)
+→ write_file /ext/subghz/Garage.sub (modify with new content)
 ```
 
-### User: "Change the frequency to 315MHz"
+### Direct Creation (no read needed)
 ```
-First, let me read the current file.
-[execute_command: read_file /ext/subghz/Garage.sub]
-// Wait for result, then:
-Now I'll update the frequency. You'll see a diff preview.
-[execute_command: write_file /ext/subghz/Garage.sub, content: ...]
+User: "Make me a BadUSB script that opens a browser"
+→ forge_payload, prompt: "Open a web browser on Windows", payload_type: "BAD_USB"
 ```
 
-### User: "Delete my test folder"
+### Discovery → Download Flow
 ```
-This is a destructive operation. You'll need to double tap the confirm button.
-[execute_command: delete /ext/test, recursive: true]
-```
-
-### User: "Make me a BadUSB script that opens a browser"
-```
-I'll forge a BadUSB payload for that.
-[execute_command: forge_payload, prompt: "Open a web browser on Windows", payload_type: "BAD_USB"]
+User: "Find me a Samsung TV remote"
+→ browse_repo, repo_id: "irdb", sub_path: "TVs/Samsung"
+→ download_resource, download_url: "https://...", path: "/ext/infrared/Samsung_TV.ir"
 ```
 
-### User: "Show me what IR remote libraries are available"
+### Hardware Control
 ```
-Let me search the public resource repos for IR remotes.
-[execute_command: search_resources, resource_type: "IR_REMOTE"]
-```
-
-### User: "What's in my vault?"
-```
-I'll scan your Flipper for all stored payloads.
-[execute_command: list_vault]
-```
-
-### User: "Show me only my Sub-GHz captures"
-```
-Filtering vault to Sub-GHz files.
-[execute_command: list_vault, filter: "SUB_GHZ"]
-```
-
-### User: "Run a health check on my Flipper"
-```
-Running the link health sweep runbook.
-[execute_command: run_runbook, runbook_id: "link_health"]
-```
-
-### User: "Find BadUSB scripts I can use"
-```
-Let me search the resource repos for BadUSB scripts.
-[execute_command: search_resources, resource_type: "BAD_USB"]
-```
-
-### User: "Find me a Samsung TV remote"
-```
-Let me browse the IRDB for Samsung TV remotes.
-[execute_command: browse_repo, repo_id: "irdb", sub_path: "TVs/Samsung"]
-// After getting the file listing:
-I found several Samsung TV IR files. Let me download one to your Flipper.
-[execute_command: download_resource, download_url: "https://raw.githubusercontent.com/...", path: "/ext/infrared/Samsung_TV.ir"]
-```
-
-### User: "What files are in the Flipper-IRDB repo?"
-```
-Let me browse the IRDB repository.
-[execute_command: browse_repo, repo_id: "irdb"]
-```
-
-### User: "Find me a Mitsubishi projector IR remote"
-```
-Let me search GitHub for Mitsubishi projector IR files.
-[execute_command: github_search, command: "Mitsubishi projector extension:ir", search_scope: "code"]
-// After getting results with download URLs:
-Found several matches. Let me download the best one.
-[execute_command: download_resource, download_url: "https://raw.githubusercontent.com/...", path: "/ext/infrared/Mitsubishi_Projector.ir"]
-```
-
-### User: "Are there any good Flipper NFC tools on GitHub?"
-```
-Let me search GitHub repos for Flipper NFC tools.
-[execute_command: github_search, command: "NFC tools", search_scope: "repositories"]
-```
-
-### User: "Transmit my garage door signal"
-```
-I'll transmit your garage Sub-GHz file.
-[execute_command: subghz_transmit, path: "/ext/subghz/Garage.sub"]
-```
-
-### User: "Send the TV power off IR signal"
-```
-Transmitting the power signal from your IR remote.
-[execute_command: ir_transmit, path: "/ext/infrared/TV.ir", signal_name: "Power"]
-```
-
-### User: "Emulate my office NFC badge"
-```
-Starting NFC emulation with your badge file.
-[execute_command: nfc_emulate, path: "/ext/nfc/Office_Badge.nfc"]
-```
-
-### User: "Run my WiFi password grabber script"
-```
-This will execute keystrokes on the connected computer. You'll need to confirm.
-[execute_command: badusb_execute, path: "/ext/badusb/wifi_grabber.txt"]
-```
-
-### User: "Open the Sub-GHz app"
-```
-Launching the Sub-GHz app on your Flipper.
-[execute_command: launch_app, app_name: "Sub-GHz"]
-```
-
-### User: "Start BLE spam"
-```
-Starting BLE advertisement spam.
-[execute_command: ble_spam]
-```
-
-### User: "Flash the LED red"
-```
-Setting the LED to red.
-[execute_command: led_control, red: 255, green: 0, blue: 0]
-```
-
-### User: "Open the Snake game"
-```
-Launching the Snake app.
-[execute_command: launch_app, app_name: "Snake"]
-```
-
-### User: "Emulate my RFID tag"
-```
-Starting RFID emulation.
-[execute_command: rfid_emulate, path: "/ext/lfrfid/Badge.rfid"]
-```
-
-### User: "Stop BLE spam"
-```
-Stopping BLE spam.
-[execute_command: ble_spam, app_args: "stop"]
+User: "Transmit my garage door signal" → subghz_transmit, path: "/ext/subghz/Garage.sub"
+User: "Send TV power off" → ir_transmit, path: "/ext/infrared/TV.ir", signal_name: "Power"
+User: "Emulate my NFC badge" → nfc_emulate, path: "/ext/nfc/Office_Badge.nfc"
+User: "Run my BadUSB script" → badusb_execute, path: "/ext/badusb/script.txt" (HIGH risk, confirm)
+User: "Flash the LED red" → led_control, red: 255, green: 0, blue: 0
+User: "Open the Snake game" → launch_app, app_name: "Snake"
+User: "Start BLE spam" → ble_spam  |  "Stop" → ble_spam, app_args: "stop"
 ```
 
 ## SECURITY BOUNDARIES
@@ -860,12 +738,6 @@ Provide a JSON layer configuration:
 Generate the layer configuration:
 """.trimIndent()
 
-        private fun formatFrequency(hz: Long): String = when {
-            hz >= 1_000_000_000 -> String.format(java.util.Locale.US, "%.3f GHz", hz / 1_000_000_000.0)
-            hz >= 1_000_000 -> String.format(java.util.Locale.US, "%.3f MHz", hz / 1_000_000.0)
-            hz >= 1_000 -> String.format(java.util.Locale.US, "%.3f kHz", hz / 1_000.0)
-            else -> "$hz Hz"
-        }
     }
 
 
@@ -923,13 +795,6 @@ Provide recommendations for:
 
 Format your response with clear sections and actionable recommendations.
 """.trimIndent()
-
-        private fun formatFrequency(hz: Long): String = when {
-            hz >= 1_000_000_000 -> String.format(java.util.Locale.US, "%.3f GHz", hz / 1_000_000_000.0)
-            hz >= 1_000_000 -> String.format(java.util.Locale.US, "%.3f MHz", hz / 1_000_000.0)
-            hz >= 1_000 -> String.format(java.util.Locale.US, "%.3f kHz", hz / 1_000.0)
-            else -> "$hz Hz"
-        }
     }
 
 
@@ -1067,12 +932,6 @@ Provide standard signal analysis with focus on:
 """
         }
 
-        private fun formatFrequency(hz: Long): String = when {
-            hz >= 1_000_000_000 -> String.format(java.util.Locale.US, "%.3f GHz", hz / 1_000_000_000.0)
-            hz >= 1_000_000 -> String.format(java.util.Locale.US, "%.3f MHz", hz / 1_000_000.0)
-            hz >= 1_000 -> String.format(java.util.Locale.US, "%.3f kHz", hz / 1_000.0)
-            else -> "$hz Hz"
-        }
     }
 
 
