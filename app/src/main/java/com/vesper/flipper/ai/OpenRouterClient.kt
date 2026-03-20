@@ -538,33 +538,39 @@ class OpenRouterClient @Inject constructor(
      */
     private fun parseResponse(responseBody: String): ChatCompletionResult {
         return try {
+            val root = try {
+                json.parseToJsonElement(responseBody).jsonObject
+            } catch (_: Exception) {
+                return ChatCompletionResult.Error("Invalid JSON in response")
+            }
+
             // Check for OpenRouter error envelope before parsing as a successful response.
             // Error responses look like: {"error": {"message": "...", "code": 400}}
-            try {
-                val root = json.parseToJsonElement(responseBody).jsonObject
-                val errorObj = root["error"]?.jsonObject
-                if (errorObj != null) {
-                    val errorMsg = errorObj["message"]?.jsonPrimitive?.contentOrNull ?: "Unknown API error"
-                    val errorCode = errorObj["code"]?.jsonPrimitive?.intOrNull
-                    Log.e(TAG, "OpenRouter API error (code=$errorCode): $errorMsg")
-                    return ChatCompletionResult.Error("API error${errorCode?.let { " $it" } ?: ""}: $errorMsg")
-                }
-            } catch (_: Exception) {
-                // Not a JSON object or no error field — continue normal parsing
+            val errorObj = root["error"]?.jsonObject
+            if (errorObj != null) {
+                val errorMsg = errorObj["message"]?.jsonPrimitive?.contentOrNull ?: "Unknown API error"
+                val errorCode = errorObj["code"]?.jsonPrimitive?.intOrNull
+                Log.e(TAG, "OpenRouter API error (code=$errorCode): $errorMsg")
+                return ChatCompletionResult.Error("API error${errorCode?.let { " $it" } ?: ""}: $errorMsg")
             }
 
             val apiResponse = json.decodeFromString<OpenRouterResponse>(responseBody)
 
-            // Validate response structure
+            // Warn on missing ID but don't reject — some providers omit it for
+            // simple completions (e.g. vision-only calls).
             if (apiResponse.id.isBlank()) {
                 Log.w(TAG, "Response missing ID. Body preview: ${responseBody.take(200)}")
-                return ChatCompletionResult.Error("Invalid response: missing ID")
             }
 
             val choice = apiResponse.choices.firstOrNull()
                 ?: return ChatCompletionResult.Error("No choices in response")
 
             val message = choice.message
+
+            // Extract content — handle both string and array-of-parts formats.
+            // Some providers (especially Gemini via OpenRouter) may return content
+            // as an array: [{"type":"text","text":"..."}] instead of a plain string.
+            val content = message.content ?: extractContentFromRaw(root)
 
             // Validate tool calls if present
             val rawToolCalls = message.toolCalls
@@ -589,7 +595,7 @@ class OpenRouterClient @Inject constructor(
             }
 
             ChatCompletionResult.Success(
-                content = message.content ?: "",
+                content = content,
                 toolCalls = toolCalls?.takeIf { it.isNotEmpty() },
                 model = apiResponse.model,
                 tokensUsed = apiResponse.usage?.totalTokens
@@ -597,6 +603,33 @@ class OpenRouterClient @Inject constructor(
         } catch (e: Exception) {
             ChatCompletionResult.Error("Failed to parse response: ${e.message}")
         }
+    }
+
+    /**
+     * Fallback content extraction from raw JSON when kotlinx deserialization
+     * returns null (e.g. content is an array of parts instead of a plain string).
+     */
+    private fun extractContentFromRaw(root: JsonObject): String {
+        try {
+            val messageObj = root["choices"]?.jsonArray
+                ?.firstOrNull()?.jsonObject
+                ?.get("message")?.jsonObject ?: return ""
+
+            // Try plain string first
+            messageObj["content"]?.jsonPrimitive?.contentOrNull?.let { return it }
+
+            // Try array-of-parts format: [{"type":"text","text":"..."},...]
+            messageObj["content"]?.jsonArray?.let { parts ->
+                return parts.mapNotNull { part ->
+                    part.jsonObject.takeIf {
+                        it["type"]?.jsonPrimitive?.contentOrNull == "text"
+                    }?.get("text")?.jsonPrimitive?.contentOrNull
+                }.joinToString("\n")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "extractContentFromRaw: fallback extraction failed: ${e.message}")
+        }
+        return ""
     }
 
     private fun sanitizeAndBuildRequestMessages(messages: List<ChatMessage>): List<OpenRouterMessage> {
@@ -1343,9 +1376,9 @@ class OpenRouterClient @Inject constructor(
         // primary tool model. Multiple candidates provide resilience against model
         // deprecation or temporary outages on OpenRouter.
         private val VISION_MODEL_CANDIDATES = listOf(
-            "google/gemini-2.5-flash-preview",
-            "google/gemini-2.0-flash-001",
-            "openai/gpt-4o-mini"
+            "google/gemini-2.0-flash-001",     // Free, fast, reliable — no thinking overhead
+            "google/gemini-2.5-flash",          // GA version (NOT "-preview" which was removed)
+            "openai/gpt-4o-mini"                // Reliable cross-provider fallback
         )
         private val VISION_PREPROCESSING_MODEL = VISION_MODEL_CANDIDATES.first()
 
