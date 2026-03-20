@@ -14,3 +14,46 @@ local.properties
 *.jks
 *.keystore
 keystore/
+
+# Generated files
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Log files
+*.log
+
+# Android Studio navigation editor temp files
+.navigation/
+
+# Android Studio captures folder
+captures/
+
+# IntelliJ
+*.iws
+.idea/
+out/
+
+# Kotlin
+*.class
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Node (mentra-bridge)
+mentra-bridge/node_modules/
+mentra-bridge/dist/
+mentra-bridge/.env
+
+# Environment / secrets
+.env
+.env.local
+*.env
+secrets/
+
+# Crash logs
+crash-reports/
