@@ -94,12 +94,12 @@ class OpenRouterClient @Inject constructor(
 
         val compactMessages = trimConversationForRequest(messages)
 
+        // Image preprocessing is handled by VesperAgent.processAIResponse() before
+        // calling chat(). If images somehow survive (e.g. direct chat() call), handle
+        // them here as a safety net.
         val hasImages = compactMessages.any { !it.imageAttachments.isNullOrEmpty() }
-
-        // If images are present, use a vision model to describe them first,
-        // then send the descriptions as text to the primary model (Hermes).
-        // This lets us keep using tool-capable models that don't support images.
         val processedMessages = if (hasImages) {
+            Log.w(TAG, "chat(): images still present at chat() entry — running safety-net preprocessing")
             preprocessImagesAsText(compactMessages, apiKey)
         } else {
             compactMessages
@@ -192,6 +192,9 @@ class OpenRouterClient @Inject constructor(
         messages: List<ChatMessage>,
         apiKey: String
     ): List<ChatMessage> = coroutineScope {
+        val imageCount = messages.sumOf { it.imageAttachments?.size ?: 0 }
+        Log.d(TAG, "preprocessImagesAsText: processing $imageCount image(s) across ${messages.size} message(s)")
+
         messages.map { msg ->
             if (msg.imageAttachments.isNullOrEmpty()) return@map msg
 
@@ -202,8 +205,11 @@ class OpenRouterClient @Inject constructor(
             val descriptions = results.filterNotNull()
             val failedCount = results.size - descriptions.size
 
+            Log.d(TAG, "preprocessImagesAsText: ${descriptions.size}/${results.size} image(s) described successfully")
+
             if (descriptions.isEmpty()) {
                 // All image descriptions failed — let the model know images were attached
+                Log.e(TAG, "preprocessImagesAsText: ALL ${results.size} image description(s) failed")
                 val failNote = "[${msg.imageAttachments.size} image(s) were attached but could not be analyzed. " +
                     "Ask the user to try again or describe what they see.]"
                 val fallbackContent = if (msg.content.isNotBlank()) {
@@ -233,116 +239,156 @@ class OpenRouterClient @Inject constructor(
     /**
      * Public entry point for agent-initiated photo analysis (request_photo action).
      * Sends the image to the vision model with a custom prompt and returns the description.
+     * Tries multiple vision model candidates for resilience.
      */
     suspend fun describeImageForAgent(
         attachment: ImageAttachment,
         prompt: String
     ): String? = withContext(Dispatchers.IO) {
-        val apiKey = settingsStore.apiKey.first() ?: return@withContext null
-        try {
-            val visionMessages = listOf(
-                OpenRouterMessage.text(
-                    role = "system",
-                    content = VISION_SYSTEM_PROMPT
-                ),
-                OpenRouterMessage.multimodal(
-                    role = "user",
-                    text = prompt,
-                    images = listOf(
-                        ImageContent(
-                            base64Data = attachment.base64Data,
-                            mimeType = attachment.mimeType,
-                            detail = "high"
-                        )
+        val apiKey = settingsStore.apiKey.first() ?: run {
+            Log.w(TAG, "describeImageForAgent: no API key configured")
+            return@withContext null
+        }
+
+        val visionMessages = listOf(
+            OpenRouterMessage.text(
+                role = "system",
+                content = VISION_SYSTEM_PROMPT
+            ),
+            OpenRouterMessage.multimodal(
+                role = "user",
+                text = prompt,
+                images = listOf(
+                    ImageContent(
+                        base64Data = attachment.base64Data,
+                        mimeType = attachment.mimeType,
+                        detail = "high"
                     )
                 )
             )
+        )
 
-            val request = OpenRouterRequest(
-                model = VISION_PREPROCESSING_MODEL,
-                messages = visionMessages,
-                tools = null,
-                toolChoice = null,
-                maxTokens = 500
-            )
+        for (model in VISION_MODEL_CANDIDATES) {
+            try {
+                Log.d(TAG, "describeImageForAgent: trying model $model")
+                val request = OpenRouterRequest(
+                    model = model,
+                    messages = visionMessages,
+                    tools = null,
+                    toolChoice = null,
+                    maxTokens = 500
+                )
 
-            val requestBody = json.encodeToString(request)
-                .toRequestBody("application/json".toMediaType())
+                val requestBody = json.encodeToString(request)
+                    .toRequestBody("application/json".toMediaType())
 
-            val httpRequest = Request.Builder()
-                .url(OPENROUTER_API_URL)
-                .addHeader("Authorization", "Bearer $apiKey")
-                .addHeader("Content-Type", "application/json")
-                .addHeader("HTTP-Referer", "https://vesper.flipper.app")
-                .addHeader("X-Title", "Vesper Flipper Control")
-                .post(requestBody)
-                .build()
+                val httpRequest = Request.Builder()
+                    .url(OPENROUTER_API_URL)
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("HTTP-Referer", "https://vesper.flipper.app")
+                    .addHeader("X-Title", "Vesper Flipper Control")
+                    .post(requestBody)
+                    .build()
 
-            val result = executeWithRetry(httpRequest)
-            when (result) {
-                is ChatCompletionResult.Success -> result.content.takeIf { it.isNotBlank() }
-                is ChatCompletionResult.Error -> null
+                val result = executeWithRetry(httpRequest)
+                when (result) {
+                    is ChatCompletionResult.Success -> {
+                        val desc = result.content.takeIf { it.isNotBlank() }
+                        if (desc != null) {
+                            Log.d(TAG, "describeImageForAgent: success with $model")
+                            return@withContext desc
+                        }
+                        Log.w(TAG, "describeImageForAgent: $model returned blank, trying next")
+                    }
+                    is ChatCompletionResult.Error -> {
+                        Log.w(TAG, "describeImageForAgent: $model failed: ${result.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "describeImageForAgent: exception with $model: ${e.message}")
             }
-        } catch (_: Exception) {
-            null
         }
+
+        Log.e(TAG, "describeImageForAgent: ALL vision models failed")
+        null
     }
 
     /**
      * Send a single image to a fast vision model and get a detailed description.
-     * Uses Gemini Flash — cheap, fast, excellent at visual identification.
+     * Tries multiple vision model candidates for resilience against model
+     * deprecation or temporary outages on OpenRouter.
      */
     private suspend fun describeImage(
         apiKey: String,
         attachment: ImageAttachment
     ): String? {
-        return try {
-            val visionMessages = listOf(
-                OpenRouterMessage.text(
-                    role = "system",
-                    content = VISION_SYSTEM_PROMPT
-                ),
-                OpenRouterMessage.multimodal(
-                    role = "user",
-                    text = "Describe this image in detail. What device, brand, model, or item is shown?",
-                    images = listOf(
-                        ImageContent(
-                            base64Data = attachment.base64Data,
-                            mimeType = attachment.mimeType,
-                            detail = "high"
-                        )
+        val base64Len = attachment.base64Data.length
+        Log.d(TAG, "describeImage: starting vision call (mime=${attachment.mimeType}, base64len=$base64Len)")
+
+        val visionMessages = listOf(
+            OpenRouterMessage.text(
+                role = "system",
+                content = VISION_SYSTEM_PROMPT
+            ),
+            OpenRouterMessage.multimodal(
+                role = "user",
+                text = "Describe this image in detail. What device, brand, model, or item is shown?",
+                images = listOf(
+                    ImageContent(
+                        base64Data = attachment.base64Data,
+                        mimeType = attachment.mimeType,
+                        detail = "high"
                     )
                 )
             )
+        )
 
-            val request = OpenRouterRequest(
-                model = VISION_PREPROCESSING_MODEL,
-                messages = visionMessages,
-                tools = null,
-                toolChoice = null,
-                maxTokens = 300
-            )
+        for (model in VISION_MODEL_CANDIDATES) {
+            try {
+                Log.d(TAG, "describeImage: trying model $model")
 
-            val requestBody = json.encodeToString(request)
-                .toRequestBody("application/json".toMediaType())
+                val request = OpenRouterRequest(
+                    model = model,
+                    messages = visionMessages,
+                    tools = null,
+                    toolChoice = null,
+                    maxTokens = 300
+                )
 
-            val httpRequest = Request.Builder()
-                .url(OPENROUTER_API_URL)
-                .addHeader("Authorization", "Bearer $apiKey")
-                .addHeader("Content-Type", "application/json")
-                .addHeader("HTTP-Referer", "https://vesper.flipper.app")
-                .addHeader("X-Title", "Vesper Flipper Control")
-                .post(requestBody)
-                .build()
+                val requestBody = json.encodeToString(request)
+                    .toRequestBody("application/json".toMediaType())
 
-            val result = executeWithRetry(httpRequest)
-            when (result) {
-                is ChatCompletionResult.Success -> result.content.takeIf { it.isNotBlank() }
-                is ChatCompletionResult.Error -> null
+                val httpRequest = Request.Builder()
+                    .url(OPENROUTER_API_URL)
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("HTTP-Referer", "https://vesper.flipper.app")
+                    .addHeader("X-Title", "Vesper Flipper Control")
+                    .post(requestBody)
+                    .build()
+
+                val result = executeWithRetry(httpRequest)
+                when (result) {
+                    is ChatCompletionResult.Success -> {
+                        val desc = result.content.takeIf { it.isNotBlank() }
+                        if (desc != null) {
+                            Log.d(TAG, "describeImage: success with $model (${desc.length} chars)")
+                            return desc
+                        }
+                        Log.w(TAG, "describeImage: $model returned blank content, trying next model")
+                    }
+                    is ChatCompletionResult.Error -> {
+                        Log.w(TAG, "describeImage: $model failed: ${result.message}, trying next model")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "describeImage: exception with $model: ${e.message}, trying next model")
             }
-        } catch (_: Exception) {
-            null
         }
+
+        Log.e(TAG, "describeImage: ALL vision models failed for image (base64len=$base64Len)")
+        return null
     }
 
     /**
@@ -492,10 +538,26 @@ class OpenRouterClient @Inject constructor(
      */
     private fun parseResponse(responseBody: String): ChatCompletionResult {
         return try {
+            // Check for OpenRouter error envelope before parsing as a successful response.
+            // Error responses look like: {"error": {"message": "...", "code": 400}}
+            try {
+                val root = json.parseToJsonElement(responseBody).jsonObject
+                val errorObj = root["error"]?.jsonObject
+                if (errorObj != null) {
+                    val errorMsg = errorObj["message"]?.jsonPrimitive?.contentOrNull ?: "Unknown API error"
+                    val errorCode = errorObj["code"]?.jsonPrimitive?.intOrNull
+                    Log.e(TAG, "OpenRouter API error (code=$errorCode): $errorMsg")
+                    return ChatCompletionResult.Error("API error${errorCode?.let { " $it" } ?: ""}: $errorMsg")
+                }
+            } catch (_: Exception) {
+                // Not a JSON object or no error field — continue normal parsing
+            }
+
             val apiResponse = json.decodeFromString<OpenRouterResponse>(responseBody)
 
             // Validate response structure
             if (apiResponse.id.isBlank()) {
+                Log.w(TAG, "Response missing ID. Body preview: ${responseBody.take(200)}")
                 return ChatCompletionResult.Error("Invalid response: missing ID")
             }
 
@@ -1277,9 +1339,15 @@ class OpenRouterClient @Inject constructor(
             "google/gemini-2.5-flash-image-preview"
         )
 
-        // Fast, cheap vision model used to describe images before sending to the
-        // primary tool model. Gemini Flash is ideal: fast, supports images, low cost.
-        private const val VISION_PREPROCESSING_MODEL = "google/gemini-2.0-flash-001"
+        // Fast, cheap vision models used to describe images before sending to the
+        // primary tool model. Multiple candidates provide resilience against model
+        // deprecation or temporary outages on OpenRouter.
+        private val VISION_MODEL_CANDIDATES = listOf(
+            "google/gemini-2.5-flash-preview",
+            "google/gemini-2.0-flash-001",
+            "openai/gpt-4o-mini"
+        )
+        private val VISION_PREPROCESSING_MODEL = VISION_MODEL_CANDIDATES.first()
 
         // Shared vision system prompt used by both image preprocessing and agent-initiated photo capture.
         private const val VISION_SYSTEM_PROMPT =
