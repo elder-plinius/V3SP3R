@@ -260,12 +260,13 @@ object InputValidator {
     }
 
     /**
-     * Validate an API key format
+     * Validate an API key format.
+     * Accepts alphanumeric characters plus common delimiters used by various
+     * providers (e.g. OpenRouter "sk-or-v1-…", OpenAI "sk-proj-…").
      */
     fun isValidApiKey(key: String): Boolean {
-        // OpenRouter keys are typically "sk-or-..." format
-        return key.length in 20..200 &&
-               key.matches(Regex("^[a-zA-Z0-9_-]+\$"))
+        return key.length in 10..500 &&
+               key.matches(Regex("^[a-zA-Z0-9_.\\-:]+\$"))
     }
 
     /**
@@ -280,14 +281,13 @@ object InputValidator {
     }
 
     /**
-     * Validate JSON structure (basic check)
+     * Validate JSON structure by attempting a parse.
      */
     fun isValidJson(json: String): Boolean {
         return try {
-            val trimmed = json.trim()
-            (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-            (trimmed.startsWith("[") && trimmed.endsWith("]"))
-        } catch (e: Exception) {
+            kotlinx.serialization.json.Json.parseToJsonElement(json)
+            true
+        } catch (_: Exception) {
             false
         }
     }

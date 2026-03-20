@@ -501,11 +501,6 @@ class OpenRouterClient @Inject constructor(
                         return ChatCompletionResult.Error("Empty response from API")
                     }
 
-                    // Validate response is valid JSON
-                    if (!InputValidator.isValidJson(responseBody)) {
-                        return ChatCompletionResult.Error("Invalid JSON response from API")
-                    }
-
                     return parseResponse(responseBody)
                 }
 
@@ -1025,19 +1020,21 @@ class OpenRouterClient @Inject constructor(
                         else if (ch == ']' && stack.lastOrNull() == '[') stack.removeLast()
                     }
                     else -> {
-                        // Flush buffered comma — it was not trailing
-                        pendingComma?.let { sb.append(it); pendingComma = null }
-                        sb.append(ch)
-                        when (ch) {
-                            '"' -> inString = true
-                            '{' -> stack.add('{')
-                            '[' -> stack.add('[')
+                        if (ch.isWhitespace() && pendingComma != null) {
+                            // Accumulate whitespace into the pending comma buffer
+                            // so ",  }" correctly drops the comma + whitespace.
+                            pendingComma!!.append(ch)
+                        } else {
+                            // Non-whitespace after comma — flush buffer, it's not trailing
+                            pendingComma?.let { sb.append(it); pendingComma = null }
+                            sb.append(ch)
+                            when (ch) {
+                                '"' -> inString = true
+                                '{' -> stack.add('{')
+                                '[' -> stack.add('[')
+                            }
                         }
                     }
-                }
-                // Accumulate whitespace into the pending comma buffer
-                if (ch.isWhitespace() && pendingComma != null) {
-                    pendingComma!!.append(ch)
                 }
             }
         }
