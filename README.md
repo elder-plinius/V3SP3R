@@ -9,13 +9,15 @@
 
 # V3SP3R — The AI Brain for Your Flipper Zero
 
-> **Talk to your Flipper Zero like it's your partner-in-hacking.** Vesper turns your pocket hacking tool into an AI-powered command center — controlled entirely through natural language from your Android device or smart glasses.
+> **Talk to your Flipper Zero like it's your partner-in-hacking.** Vesper turns your pocket hacking tool into an AI-powered command center — controlled entirely through natural language from your Android or iOS device, or smart glasses.
 
 No menus. No manuals. Just natural language prompting.
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Android](https://img.shields.io/badge/Android-8.0%2B-green.svg)](https://developer.android.com)
+[![iOS](https://img.shields.io/badge/iOS-17%2B-blue.svg)](https://developer.apple.com/ios/)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.2-purple.svg)](https://kotlinlang.org)
+[![Swift](https://img.shields.io/badge/Swift-5.9-orange.svg)](https://swift.org)
 
 ---
 
@@ -378,6 +380,44 @@ Found a vulnerability? Please report it responsibly. See [SECURITY.md](SECURITY.
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE) for the full text.
+
+---
+
+## iOS Port
+
+V3SP3R is also available as a native iOS app built with SwiftUI, targeting iOS 17+.
+
+### Build
+
+```bash
+cd ios/Vesper
+swift build
+```
+
+Or open `ios/Vesper/Package.swift` in Xcode and build for iOS Simulator or device.
+
+### Run Tests
+
+```bash
+cd ios/Vesper
+swift test
+```
+
+### iOS Architecture
+
+| Android | iOS |
+|---------|-----|
+| Jetpack Compose | SwiftUI |
+| ViewModel + StateFlow | @Observable + @Published |
+| Hilt DI | ServiceLocator |
+| Room Database | SwiftData |
+| EncryptedSharedPreferences | Keychain |
+| BluetoothGatt | CoreBluetooth |
+| SpeechRecognizer | SFSpeechRecognizer |
+| CameraX | AVFoundation |
+| WidgetProvider | WidgetKit |
+
+See [ios/PR_DESCRIPTION.md](ios/PR_DESCRIPTION.md) for full details.
 
 ---
 
