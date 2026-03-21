@@ -60,6 +60,8 @@ class FlipperBleService : Service() {
     private var connectedUsbDevice: UsbDevice? = null
     private var usbReadJob: Job? = null
     private var bleKeepaliveJob: Job? = null
+    private var bleMtuSetupJob: Job? = null
+    private var bleNotificationSetupJob: Job? = null
     private var usbReceiverRegistered = false
     private var broadScanStarted = false
 
@@ -118,6 +120,14 @@ class FlipperBleService : Service() {
     private var lastBleActivityAtMs: Long = 0L
     @Volatile
     private var lastBlePriorityRequestAtMs: Long = 0L
+    @Volatile
+    private var awaitingBleMtuResult: Boolean = false
+    @Volatile
+    private var serviceDiscoveryInFlight: Boolean = false
+    @Volatile
+    private var awaitingNotificationDescriptor: Boolean = false
+    @Volatile
+    private var pendingBleDisconnectError: String? = null
 
     private val usbBroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -499,6 +509,7 @@ class FlipperBleService : Service() {
         lastRequestedBluetoothDevice = resolvedDevice
         reconnectAttemptCount = 0
         pendingConnectionName = device.name.takeIf { it.isNotBlank() && !isPlaceholderName(it) }
+        resetBleSetupState(clearDisconnectError = true)
 
         _connectionState.value = ConnectionState.Connecting(device.name)
 
@@ -1009,13 +1020,27 @@ class FlipperBleService : Service() {
                     markBleActivity()
                     lastRequestedBluetoothDevice = gatt.device
                     lastRequestedDeviceAddress = gatt.device.address
+                    resetBleSetupState(clearDisconnectError = true)
                     if (hasBluetoothPermissions()) {
                         runCatching {
                             gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                         }
                         lastBlePriorityRequestAtMs = System.currentTimeMillis()
-                        gatt.requestMtu(REQUESTED_ATT_MTU)
-                        gatt.discoverServices()
+                        val mtuRequested = runCatching {
+                            gatt.requestMtu(REQUESTED_ATT_MTU)
+                        }.getOrDefault(false)
+                        if (mtuRequested) {
+                            awaitingBleMtuResult = true
+                            bleMtuSetupJob?.cancel()
+                            bleMtuSetupJob = serviceScope.launch {
+                                delay(BLE_MTU_SETUP_TIMEOUT_MS)
+                                if (!isCurrentGatt(gatt) || !awaitingBleMtuResult) return@launch
+                                Log.w(TAG, "MTU callback timed out; continuing with service discovery")
+                                startServiceDiscovery(gatt, reason = "mtu timeout")
+                            }
+                        } else {
+                            startServiceDiscovery(gatt, reason = "mtu request rejected")
+                        }
                     }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -1030,6 +1055,13 @@ class FlipperBleService : Service() {
                     serialResetCharacteristic = null
                     stopBleKeepalive()
                     remainingSerialBufferBytes = null
+                    bleMtuSetupJob?.cancel()
+                    bleMtuSetupJob = null
+                    bleNotificationSetupJob?.cancel()
+                    bleNotificationSetupJob = null
+                    awaitingBleMtuResult = false
+                    serviceDiscoveryInFlight = false
+                    awaitingNotificationDescriptor = false
                     if (bluetoothGatt === gatt) {
                         bluetoothGatt = null
                     }
@@ -1039,11 +1071,15 @@ class FlipperBleService : Service() {
                         activeTransport = CommandTransport.NONE
                     }
                     val autoReconnectScheduled = scheduleAutoReconnectIfEligible(status)
+                    val pendingDisconnectError = pendingBleDisconnectError
+                    pendingBleDisconnectError = null
                     _connectionState.value = if (autoReconnectScheduled) {
                         val deviceName = lastRequestedDeviceName
                             ?: pendingConnectionName
                             ?: DEFAULT_FLIPPER_NAME
                         ConnectionState.Connecting("$deviceName (reconnect ${reconnectAttemptCount}/${MAX_TIMEOUT_RECONNECT_ATTEMPTS})")
+                    } else if (!pendingDisconnectError.isNullOrBlank()) {
+                        ConnectionState.Error(pendingDisconnectError)
                     } else if (status != BluetoothGatt.GATT_SUCCESS) {
                         val statusText = describeGattStatus(status)
                         val reasonHint = when (status) {
@@ -1066,9 +1102,13 @@ class FlipperBleService : Service() {
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (!isCurrentGatt(gatt)) return
+            awaitingBleMtuResult = false
+            bleMtuSetupJob?.cancel()
+            bleMtuSetupJob = null
+            serviceDiscoveryInFlight = false
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.w(TAG, "Service discovery failed status=${describeGattStatus(status)}")
-                _connectionState.value = ConnectionState.Error("Service discovery failed")
+                failBleConnectSetup(gatt, "Service discovery failed")
                 return
             }
 
@@ -1077,7 +1117,8 @@ class FlipperBleService : Service() {
                 val discoveredServices = gatt.services
                     ?.joinToString(limit = 8) { it.uuid.toString() }
                     .orEmpty()
-                _connectionState.value = ConnectionState.Error(
+                failBleConnectSetup(
+                    gatt,
                     "Flipper serial service not found. Exit Bluetooth Remote/Control mode on Flipper and retry. " +
                             "Services: $discoveredServices"
                 )
@@ -1093,7 +1134,7 @@ class FlipperBleService : Service() {
             serialResetCharacteristic = serialService.getCharacteristic(FLIPPER_SERIAL_RESET_UUID)
             remainingSerialBufferBytes = null
             if (serialCharacteristic == null || serialRxCharacteristic == null) {
-                _connectionState.value = ConnectionState.Error("Flipper serial characteristics not usable")
+                failBleConnectSetup(gatt, "Flipper serial characteristics not usable")
                 return
             }
 
@@ -1109,7 +1150,7 @@ class FlipperBleService : Service() {
             // Enable notifications on RX characteristic and wait for descriptor write completion.
             if (hasBluetoothPermissions()) {
                 val rx = serialRxCharacteristic ?: run {
-                    _connectionState.value = ConnectionState.Error("Flipper RX characteristic unavailable")
+                    failBleConnectSetup(gatt, "Flipper RX characteristic unavailable")
                     return
                 }
                 gatt.setCharacteristicNotification(rx, true)
@@ -1124,8 +1165,19 @@ class FlipperBleService : Service() {
                     }
                     val started = gatt.writeDescriptor(descriptor)
                     if (!started) {
-                        pendingConnectedDevice = null
-                        _connectionState.value = ConnectionState.Error("Failed to enable Flipper notifications")
+                        failBleConnectSetup(gatt, "Failed to enable Flipper notifications")
+                    }
+                    awaitingNotificationDescriptor = started
+                    if (started) {
+                        bleNotificationSetupJob?.cancel()
+                        bleNotificationSetupJob = serviceScope.launch {
+                            delay(BLE_NOTIFICATION_SETUP_TIMEOUT_MS)
+                            if (!isCurrentGatt(gatt) || !awaitingNotificationDescriptor || notificationsReady) {
+                                return@launch
+                            }
+                            Log.w(TAG, "Notification descriptor write timed out")
+                            failBleConnectSetup(gatt, "BLE notification setup timed out. Retry connect.")
+                        }
                     }
                     return
                 }
@@ -1133,6 +1185,7 @@ class FlipperBleService : Service() {
 
             // Descriptor not available; continue with best-effort connection readiness.
             notificationsReady = true
+            awaitingNotificationDescriptor = false
             finalizeConnectedState(device)
         }
 
@@ -1146,13 +1199,13 @@ class FlipperBleService : Service() {
             if (descriptor.characteristic?.uuid != serialRxCharacteristic?.uuid) return
 
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                pendingConnectedDevice = null
-                notificationsReady = false
-                _connectionState.value = ConnectionState.Error("Failed to enable Flipper notifications")
-                updateNotification()
+                failBleConnectSetup(gatt, "Failed to enable Flipper notifications")
                 return
             }
 
+            bleNotificationSetupJob?.cancel()
+            bleNotificationSetupJob = null
+            awaitingNotificationDescriptor = false
             notificationsReady = true
             val device = pendingConnectedDevice
             if (device != null) {
@@ -1162,9 +1215,14 @@ class FlipperBleService : Service() {
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             if (!isCurrentGatt(gatt)) return
+            awaitingBleMtuResult = false
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 negotiatedMtu = mtu.coerceIn(DEFAULT_ATT_MTU, REQUESTED_ATT_MTU)
             }
+            startServiceDiscovery(
+                gatt,
+                reason = if (status == BluetoothGatt.GATT_SUCCESS) "mtu callback" else "mtu failure"
+            )
         }
 
         override fun onCharacteristicChanged(
@@ -1515,6 +1573,49 @@ class FlipperBleService : Service() {
         return bluetoothGatt === gatt
     }
 
+    private fun resetBleSetupState(clearDisconnectError: Boolean = false) {
+        bleMtuSetupJob?.cancel()
+        bleMtuSetupJob = null
+        bleNotificationSetupJob?.cancel()
+        bleNotificationSetupJob = null
+        awaitingBleMtuResult = false
+        serviceDiscoveryInFlight = false
+        awaitingNotificationDescriptor = false
+        if (clearDisconnectError) {
+            pendingBleDisconnectError = null
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startServiceDiscovery(gatt: BluetoothGatt, reason: String) {
+        if (!isCurrentGatt(gatt)) return
+        if (serviceDiscoveryInFlight) return
+        awaitingBleMtuResult = false
+        bleMtuSetupJob?.cancel()
+        bleMtuSetupJob = null
+        serviceDiscoveryInFlight = true
+        val started = hasBluetoothPermissions() && runCatching { gatt.discoverServices() }.getOrDefault(false)
+        if (!started) {
+            serviceDiscoveryInFlight = false
+            failBleConnectSetup(gatt, "BLE service discovery could not start. Retry connect.")
+            return
+        }
+        Log.d(TAG, "Starting BLE service discovery ($reason)")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun failBleConnectSetup(gatt: BluetoothGatt, message: String) {
+        pendingConnectedDevice = null
+        notificationsReady = false
+        pendingBleDisconnectError = message
+        resetBleSetupState(clearDisconnectError = false)
+        _connectionState.value = ConnectionState.Error(message)
+        updateNotification()
+        if (isCurrentGatt(gatt) && hasBluetoothPermissions()) {
+            runCatching { gatt.disconnect() }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun scheduleAutoReconnectIfEligible(status: Int): Boolean {
         val reconnectableStatus = status == GATT_STATUS_CONN_TIMEOUT ||
@@ -1707,6 +1808,7 @@ class FlipperBleService : Service() {
     }
 
     private fun finalizeConnectedState(device: FlipperDevice) {
+        resetBleSetupState(clearDisconnectError = true)
         pendingConnectionName = null
         pendingConnectedDevice = null
         activeTransport = CommandTransport.BLE
@@ -2460,6 +2562,8 @@ class FlipperBleService : Service() {
         private const val NOTIFICATION_READY_POLL_MS = 50L
         private const val COMMAND_TRANSPORT_READY_TIMEOUT_MS = 5_000L
         private const val COMMAND_TRANSPORT_READY_POLL_MS = 50L
+        private const val BLE_MTU_SETUP_TIMEOUT_MS = 1_500L
+        private const val BLE_NOTIFICATION_SETUP_TIMEOUT_MS = 2_500L
         private const val BLE_KEEPALIVE_INTERVAL_MS = 3_000L
         private const val BLE_KEEPALIVE_IDLE_THRESHOLD_MS = 3_500L
         private const val BLE_PRIORITY_REFRESH_INTERVAL_MS = 45_000L
