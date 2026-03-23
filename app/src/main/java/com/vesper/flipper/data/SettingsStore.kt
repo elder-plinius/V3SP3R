@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
+import com.vesper.flipper.ai.LlmProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -27,6 +28,32 @@ class SettingsStore @Inject constructor(
     suspend fun setApiKey(key: String) {
         context.dataStore.edit { preferences ->
             preferences[API_KEY] = key
+        }
+    }
+
+    // MiniMax API Key
+    private val MINIMAX_API_KEY = stringPreferencesKey("minimax_api_key")
+
+    val miniMaxApiKey: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[MINIMAX_API_KEY]
+    }
+
+    suspend fun setMiniMaxApiKey(key: String) {
+        context.dataStore.edit { preferences ->
+            preferences[MINIMAX_API_KEY] = key
+        }
+    }
+
+    // LLM Provider selection
+    private val LLM_PROVIDER = stringPreferencesKey("llm_provider")
+
+    val llmProvider: Flow<LlmProvider> = context.dataStore.data.map { preferences ->
+        LlmProvider.fromName(preferences[LLM_PROVIDER] ?: LlmProvider.OPEN_ROUTER.name)
+    }
+
+    suspend fun setLlmProvider(provider: LlmProvider) {
+        context.dataStore.edit { preferences ->
+            preferences[LLM_PROVIDER] = provider.name
         }
     }
 
@@ -308,6 +335,15 @@ class SettingsStore @Inject constructor(
         const val DEFAULT_AI_MAX_ITERATIONS = 10
         const val MIN_AI_MAX_ITERATIONS = 4
         const val MAX_AI_MAX_ITERATIONS = 20
+
+        // MiniMax models — used when the provider is set to MiniMax.
+        const val DEFAULT_MINIMAX_MODEL = "MiniMax-M2.7"
+        val MINIMAX_MODELS = listOf(
+            ModelInfo("MiniMax-M2.7", "MiniMax M2.7", "Latest MiniMax model (1M context)"),
+            ModelInfo("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed", "Faster M2.7 variant"),
+            ModelInfo("MiniMax-M2.5", "MiniMax M2.5", "MiniMax M2.5 (204K context)"),
+            ModelInfo("MiniMax-M2.5-highspeed", "MiniMax M2.5 Highspeed", "Fastest MiniMax model")
+        )
 
         // Used when fetching live catalog fails (offline/rate-limited).
         val FALLBACK_MODELS = listOf(

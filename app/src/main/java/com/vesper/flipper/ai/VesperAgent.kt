@@ -43,6 +43,7 @@ fun interface PhotoCaptureCallback {
 @Singleton
 class VesperAgent @Inject constructor(
     private val openRouterClient: OpenRouterClient,
+    private val miniMaxClient: MiniMaxClient,
     private val commandExecutor: CommandExecutor,
     private val auditService: AuditService,
     private val chatDao: ChatDao,
@@ -338,8 +339,15 @@ class VesperAgent @Inject constructor(
                 )
             )
 
-            // Send API messages (images replaced with text descriptions) to the model
-            val result = openRouterClient.chat(apiMessages, currentSessionId)
+            // Route to the configured LLM provider
+            val provider = runCatching {
+                settingsStore.llmProvider.first()
+            }.getOrDefault(LlmProvider.OPEN_ROUTER)
+
+            val result = when (provider) {
+                LlmProvider.MINIMAX -> miniMaxClient.chat(apiMessages, currentSessionId)
+                LlmProvider.OPEN_ROUTER -> openRouterClient.chat(apiMessages, currentSessionId)
+            }
 
             when (result) {
                 is ChatCompletionResult.Error -> {
