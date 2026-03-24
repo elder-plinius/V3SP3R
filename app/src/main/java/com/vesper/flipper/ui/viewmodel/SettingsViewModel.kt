@@ -2,6 +2,7 @@ package com.vesper.flipper.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.vesper.flipper.ai.LlmProvider
 import com.vesper.flipper.data.ModelInfo
 import com.vesper.flipper.data.OpenRouterModelCatalog
 import com.vesper.flipper.data.SettingsStore
@@ -14,7 +15,9 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class SettingsState(
+    val llmProvider: LlmProvider = LlmProvider.OPEN_ROUTER,
     val apiKey: String = "",
+    val miniMaxApiKey: String = "",
     val selectedModel: String = SettingsStore.DEFAULT_MODEL,
     val aiMaxIterations: Int = SettingsStore.DEFAULT_AI_MAX_ITERATIONS,
     val autoConnect: Boolean = true,
@@ -91,14 +94,18 @@ class SettingsViewModel @Inject constructor(
                     settingsStore.autoApproveHigh,
                     settingsStore.ttsEnabled,
                     settingsStore.ttsVoiceId,
-                    settingsStore.ttsAutoSpeak
+                    settingsStore.ttsAutoSpeak,
+                    settingsStore.miniMaxApiKey,
+                    settingsStore.llmProvider
                 ) { values ->
                     TtsSettingsBundle(
                         autoApproveMedium = values[0] as Boolean,
                         autoApproveHigh = values[1] as Boolean,
                         ttsEnabled = values[2] as Boolean,
                         ttsVoiceId = values[3] as String,
-                        ttsAutoSpeak = values[4] as Boolean
+                        ttsAutoSpeak = values[4] as Boolean,
+                        miniMaxApiKey = (values[5] as? String) ?: "",
+                        llmProvider = values[6] as LlmProvider
                     )
                 }
             ) { base, tts ->
@@ -107,7 +114,9 @@ class SettingsViewModel @Inject constructor(
                     autoApproveHigh = tts.autoApproveHigh,
                     ttsEnabled = tts.ttsEnabled,
                     ttsVoiceId = tts.ttsVoiceId,
-                    ttsAutoSpeak = tts.ttsAutoSpeak
+                    ttsAutoSpeak = tts.ttsAutoSpeak,
+                    miniMaxApiKey = tts.miniMaxApiKey,
+                    llmProvider = tts.llmProvider
                 )
             }.combine(
                 combine(
@@ -138,7 +147,9 @@ class SettingsViewModel @Inject constructor(
                 )
             }.collect { settings ->
                 _state.update { it.copy(
+                    llmProvider = settings.llmProvider,
                     apiKey = settings.apiKey,
+                    miniMaxApiKey = settings.miniMaxApiKey,
                     selectedModel = settings.selectedModel,
                     aiMaxIterations = settings.aiMaxIterations,
                     autoConnect = settings.autoConnect,
@@ -171,10 +182,38 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setLlmProvider(provider: LlmProvider) {
+        viewModelScope.launch {
+            settingsStore.setLlmProvider(provider)
+            // Switch model to the default for the new provider
+            val defaultModel = when (provider) {
+                LlmProvider.MINIMAX -> SettingsStore.DEFAULT_MINIMAX_MODEL
+                LlmProvider.OPEN_ROUTER -> SettingsStore.DEFAULT_MODEL
+            }
+            settingsStore.setSelectedModel(defaultModel)
+            _state.update { it.copy(llmProvider = provider, selectedModel = defaultModel) }
+            // Refresh model list for the new provider
+            _availableModels.value = when (provider) {
+                LlmProvider.MINIMAX -> SettingsStore.MINIMAX_MODELS
+                LlmProvider.OPEN_ROUTER -> SettingsStore.FALLBACK_MODELS
+            }
+            if (provider == LlmProvider.OPEN_ROUTER) {
+                refreshAvailableModels()
+            }
+        }
+    }
+
     fun setApiKey(key: String) {
         viewModelScope.launch {
             settingsStore.setApiKey(key)
             _state.update { it.copy(apiKey = key) }
+        }
+    }
+
+    fun setMiniMaxApiKey(key: String) {
+        viewModelScope.launch {
+            settingsStore.setMiniMaxApiKey(key)
+            _state.update { it.copy(miniMaxApiKey = key) }
         }
     }
 
@@ -196,6 +235,12 @@ class SettingsViewModel @Inject constructor(
         if (_isRefreshingModels.value) return
 
         viewModelScope.launch {
+            // MiniMax models are static — no catalog fetch needed
+            if (_state.value.llmProvider == LlmProvider.MINIMAX) {
+                _availableModels.value = SettingsStore.MINIMAX_MODELS
+                return@launch
+            }
+
             _isRefreshingModels.value = true
             openRouterModelCatalog.fetchLatestByManufacturer()
                 .onSuccess { models ->
@@ -356,7 +401,9 @@ private data class TtsSettingsBundle(
     val autoApproveHigh: Boolean,
     val ttsEnabled: Boolean,
     val ttsVoiceId: String,
-    val ttsAutoSpeak: Boolean
+    val ttsAutoSpeak: Boolean,
+    val miniMaxApiKey: String,
+    val llmProvider: LlmProvider
 )
 
 private data class GlassesSettingsBundle(

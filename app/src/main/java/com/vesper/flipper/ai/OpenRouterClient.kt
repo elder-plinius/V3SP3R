@@ -1396,10 +1396,10 @@ class OpenRouterClient @Inject constructor(
         private const val MAX_ERROR_MODEL_LIST = 6
         private const val MAX_TOOL_CALLS_PER_RESPONSE = 1
         private const val TOOL_UNSUPPORTED_CACHE_MS = 5 * 60 * 1000L
-        private const val MAX_CONTEXT_MESSAGES = 24
-        private const val TOOL_CALL_RESPONSE_MAX_TOKENS = 1024
-        private const val FORGE_RESPONSE_MAX_TOKENS = 6144
-        private const val DEFAULT_RESPONSE_MAX_TOKENS = 720
+        internal const val MAX_CONTEXT_MESSAGES = 24
+        internal const val TOOL_CALL_RESPONSE_MAX_TOKENS = 1024
+        internal const val FORGE_RESPONSE_MAX_TOKENS = 6144
+        internal const val DEFAULT_RESPONSE_MAX_TOKENS = 720
         /** Max input size for JSON repair to prevent resource exhaustion. */
         private const val MAX_REPAIRABLE_JSON_LENGTH = 100_000
         /** Max unclosed brackets the repair function will close. */
@@ -1448,7 +1448,7 @@ class OpenRouterClient @Inject constructor(
             "cohere/command-a"
         )
 
-        private val KNOWN_NON_TOOL_MODELS = setOf(
+        internal val KNOWN_NON_TOOL_MODELS = setOf(
             "google/gemini-2.5-flash-image-preview"
         )
 
@@ -1470,7 +1470,7 @@ class OpenRouterClient @Inject constructor(
             "and any details that would help identify the correct IR/RF/NFC protocol or signal. " +
             "Be specific and concise."
 
-        private val EXECUTE_COMMAND_TOOL = OpenRouterTool(
+        internal val EXECUTE_COMMAND_TOOL = OpenRouterTool(
             type = "function",
             function = OpenRouterToolFunction(
                 name = "execute_command",
@@ -1668,7 +1668,7 @@ class OpenRouterClient @Inject constructor(
      * when the user has smart glasses disabled, which would fail and
      * confuse normal photo workflows.
      */
-    private fun buildToolWithoutGlasses(): OpenRouterTool {
+    internal fun buildToolWithoutGlasses(): OpenRouterTool {
         val fullParams = EXECUTE_COMMAND_TOOL.function.parameters
         val properties = fullParams["properties"] as? JsonObject ?: return EXECUTE_COMMAND_TOOL
         val actionProp = properties["action"] as? JsonObject ?: return EXECUTE_COMMAND_TOOL
