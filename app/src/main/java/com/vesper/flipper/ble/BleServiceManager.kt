@@ -144,6 +144,13 @@ class BleServiceManager @Inject constructor(
         }
     }
 
+    fun connectDesktopBridge() {
+        managerScope.launch {
+            val service = awaitService() ?: return@launch
+            service.connectDesktopBridgeIfAvailable()
+        }
+    }
+
     /**
      * Disconnect from current device
      */

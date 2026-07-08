@@ -85,6 +85,14 @@ android {
         buildConfig = true
     }
 
+    defaultConfig {
+        buildConfigField(
+            "String",
+            "OPENROUTER_DEFAULT_MODEL",
+            "\"${localProps.getProperty("OPENROUTER_DEFAULT_MODEL", "").replace("\"", "\\\"")}\""
+        )
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -155,4 +163,8 @@ dependencies {
 
     // Diff utils
     implementation("io.github.java-diff-utils:java-diff-utils:4.12")
+
+    // Unit tests
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
 }

@@ -199,9 +199,7 @@ class SettingsViewModel @Inject constructor(
             _isRefreshingModels.value = true
             openRouterModelCatalog.fetchLatestByManufacturer()
                 .onSuccess { models ->
-                    val merged = (
-                            models + SettingsStore.FALLBACK_MODELS.filter { it.id == SettingsStore.DEFAULT_MODEL }
-                            ).distinctBy { it.id }
+                    val merged = (models + SettingsStore.FALLBACK_MODELS).distinctBy { it.id }
                     _availableModels.value = merged
                 }
                 .onFailure {

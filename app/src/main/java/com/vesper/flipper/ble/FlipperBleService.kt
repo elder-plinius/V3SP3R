@@ -28,6 +28,7 @@ import com.hoho.android.usbserial.driver.ProbeTable
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
+import com.vesper.flipper.BuildConfig
 import com.vesper.flipper.MainActivity
 import com.vesper.flipper.R
 import com.vesper.flipper.VesperApplication
@@ -36,6 +37,11 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.EOFException
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -59,6 +65,12 @@ class FlipperBleService : Service() {
     private var usbDeviceConnection: UsbDeviceConnection? = null
     private var connectedUsbDevice: UsbDevice? = null
     private var usbReadJob: Job? = null
+    private var desktopBridgeSocket: Socket? = null
+    private var desktopBridgeInput: DataInputStream? = null
+    private var desktopBridgeOutput: DataOutputStream? = null
+    private var desktopBridgeReadJob: Job? = null
+    private var desktopBridgeHost: String? = null
+    private var desktopBridgePort: Int? = null
     private var bleKeepaliveJob: Job? = null
     private var usbReceiverRegistered = false
     private var broadScanStarted = false
@@ -522,6 +534,64 @@ class FlipperBleService : Service() {
         }
     }
 
+    fun connectDesktopBridgeIfAvailable(host: String = "10.0.2.2", port: Int = 8765) {
+        serviceScope.launch {
+            stopScan()
+            disconnect()
+            connectDesktopBridgeInternal(host, port)
+        }
+    }
+
+    private suspend fun connectDesktopBridgeInternal(host: String, port: Int): Boolean {
+        if (!BuildConfig.DEBUG) {
+            _connectionState.value = ConnectionState.Error("Desktop Bridge is only available in debug builds")
+            updateNotification()
+            return false
+        }
+
+        _connectionState.value = ConnectionState.Connecting("Desktop Bridge")
+        updateNotification()
+
+        return try {
+            val socket = withContext(Dispatchers.IO) {
+                Socket().apply {
+                    tcpNoDelay = true
+                    connect(InetSocketAddress(host, port), DESKTOP_BRIDGE_CONNECT_TIMEOUT_MS)
+                }
+            }
+
+            desktopBridgeSocket = socket
+            desktopBridgeInput = DataInputStream(socket.getInputStream())
+            desktopBridgeOutput = DataOutputStream(socket.getOutputStream())
+            desktopBridgeHost = host
+            desktopBridgePort = port
+            activeTransport = CommandTransport.DESKTOP_BRIDGE
+            flipperProtocol.onConnectionReset()
+            startDesktopBridgeReadLoop()
+
+            _connectedDevice.value = FlipperDevice(
+                address = "desktop:$host:$port",
+                name = "Desktop Bridge (USB)",
+                rssi = 0,
+                isConfirmedFlipper = true
+            )
+            _connectionState.value = ConnectionState.Connected("Desktop Bridge (USB)")
+            updateNotification()
+
+            serviceScope.launch {
+                flipperProtocol.probeCliAvailability(force = true)
+            }
+            true
+        } catch (t: Throwable) {
+            disconnectDesktopBridgeTransport(setState = false)
+            _connectionState.value = ConnectionState.Error(
+                "Desktop Bridge connect failed: ${t.message ?: t::class.java.simpleName}"
+            )
+            updateNotification()
+            false
+        }
+    }
+
     private suspend fun connectUsbInternal(preferredDevice: UsbDevice? = null): Boolean {
         val manager = usbManager ?: run {
             _connectionState.value = ConnectionState.Error("USB host manager unavailable")
@@ -846,6 +916,42 @@ class FlipperBleService : Service() {
         }
     }
 
+    private fun startDesktopBridgeReadLoop() {
+        desktopBridgeReadJob?.cancel()
+        desktopBridgeReadJob = serviceScope.launch {
+            val input = desktopBridgeInput ?: return@launch
+            while (isActive && activeTransport == CommandTransport.DESKTOP_BRIDGE) {
+                try {
+                    val size = withContext(Dispatchers.IO) { input.readInt() }
+                    if (size < 0 || size > DESKTOP_BRIDGE_MAX_FRAME_BYTES) {
+                        throw IllegalStateException("Invalid bridge frame size: $size")
+                    }
+                    val payload = ByteArray(size)
+                    withContext(Dispatchers.IO) { input.readFully(payload) }
+                    if (payload.isNotEmpty()) {
+                        completePendingOperation(payload)
+                        flipperProtocol.processIncomingData(payload)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (eof: EOFException) {
+                    disconnectDesktopBridgeTransport(
+                        setState = true,
+                        errorMessage = "Desktop Bridge disconnected"
+                    )
+                    break
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Desktop Bridge read failed: ${t.message}")
+                    disconnectDesktopBridgeTransport(
+                        setState = true,
+                        errorMessage = "Desktop Bridge error: ${t.message ?: "read failed"}"
+                    )
+                    break
+                }
+            }
+        }
+    }
+
     private fun markBleActivity() {
         lastBleActivityAtMs = System.currentTimeMillis()
     }
@@ -914,6 +1020,7 @@ class FlipperBleService : Service() {
         stopBleKeepalive()
         disconnectBleTransport()
         disconnectUsbTransport(setState = false)
+        disconnectDesktopBridgeTransport(setState = false)
         _connectedDevice.value = null
         activeTransport = CommandTransport.NONE
         if (_connectionState.value !is ConnectionState.Error) {
@@ -969,6 +1076,35 @@ class FlipperBleService : Service() {
         pendingUsbPermissionRequest?.cancel()
         pendingUsbPermissionRequest = null
         if (activeTransport == CommandTransport.USB) {
+            activeTransport = CommandTransport.NONE
+        }
+        if (setState) {
+            _connectedDevice.value = null
+            _connectionState.value = if (!errorMessage.isNullOrBlank()) {
+                ConnectionState.Error(errorMessage)
+            } else {
+                ConnectionState.Disconnected
+            }
+            updateNotification()
+            flipperProtocol.onConnectionReset()
+        }
+    }
+
+    private fun disconnectDesktopBridgeTransport(
+        setState: Boolean,
+        errorMessage: String? = null
+    ) {
+        desktopBridgeReadJob?.cancel()
+        desktopBridgeReadJob = null
+        runCatching { desktopBridgeInput?.close() }
+        runCatching { desktopBridgeOutput?.close() }
+        runCatching { desktopBridgeSocket?.close() }
+        desktopBridgeInput = null
+        desktopBridgeOutput = null
+        desktopBridgeSocket = null
+        desktopBridgeHost = null
+        desktopBridgePort = null
+        if (activeTransport == CommandTransport.DESKTOP_BRIDGE) {
             activeTransport = CommandTransport.NONE
         }
         if (setState) {
@@ -1267,10 +1403,10 @@ class FlipperBleService : Service() {
             return false
         }
 
-        return if (isUsbCommandTransportConnected()) {
-            sendDataOverUsb(data, preferNoResponse)
-        } else {
-            sendDataOverBle(data, preferNoResponse, ignoreOverflowBudget)
+        return when {
+            isUsbCommandTransportConnected() -> sendDataOverUsb(data, preferNoResponse)
+            isDesktopBridgeCommandTransportConnected() -> sendDataOverDesktopBridge(data, preferNoResponse)
+            else -> sendDataOverBle(data, preferNoResponse, ignoreOverflowBudget)
         }
     }
 
@@ -1300,6 +1436,35 @@ class FlipperBleService : Service() {
                     true
                 } catch (t: Throwable) {
                     lastWriteFailureReason = "USB write failed: ${t.message ?: t::class.java.simpleName}"
+                    false
+                }
+            }
+        } ?: return false
+        return writeResult
+    }
+
+    private suspend fun sendDataOverDesktopBridge(
+        data: ByteArray,
+        preferNoResponse: Boolean
+    ): Boolean {
+        val output = desktopBridgeOutput ?: run {
+            lastWriteFailureReason = "Desktop Bridge output unavailable"
+            return false
+        }
+        val lockTimeoutMs = resolveWriteLockTimeoutMs(data.size, preferNoResponse)
+        val writeResult = withWriteMutexOrFail(
+            lockTimeoutMs = lockTimeoutMs,
+            timeoutReason = "Desktop Bridge write queue busy (timeout waiting for writer lock)"
+        ) {
+            withContext(Dispatchers.IO) {
+                try {
+                    output.writeInt(data.size)
+                    output.write(data)
+                    output.flush()
+                    lastWriteFailureReason = null
+                    true
+                } catch (t: Throwable) {
+                    lastWriteFailureReason = "Desktop Bridge write failed: ${t.message ?: t::class.java.simpleName}"
                     false
                 }
             }
@@ -1797,7 +1962,9 @@ class FlipperBleService : Service() {
     }
 
     fun isCommandTransportConnected(): Boolean {
-        return isUsbCommandTransportConnected() || isBleCommandTransportConnected()
+        return isUsbCommandTransportConnected() ||
+                isDesktopBridgeCommandTransportConnected() ||
+                isBleCommandTransportConnected()
     }
 
     private fun isBleCommandTransportConnected(): Boolean {
@@ -1815,6 +1982,16 @@ class FlipperBleService : Service() {
                 usbSerialPort != null &&
                 usbDeviceConnection != null &&
                 usbReadJob?.isActive == true &&
+                _connectionState.value is ConnectionState.Connected
+    }
+
+    private fun isDesktopBridgeCommandTransportConnected(): Boolean {
+        return activeTransport == CommandTransport.DESKTOP_BRIDGE &&
+                desktopBridgeSocket?.isConnected == true &&
+                desktopBridgeSocket?.isClosed == false &&
+                desktopBridgeInput != null &&
+                desktopBridgeOutput != null &&
+                desktopBridgeReadJob?.isActive == true &&
                 _connectionState.value is ConnectionState.Connected
     }
 
@@ -1871,6 +2048,11 @@ class FlipperBleService : Service() {
                         val usbName = usbDevice?.let { resolveUsbDeviceName(it) } ?: "USB"
                         val baud = currentUsbBaudRate?.toString() ?: "default"
                         ConnectionCheckLevel.PASS to "Connected over USB: $usbName (baud=$baud)"
+                    }
+                    transportConnected && activeMode == CommandTransport.DESKTOP_BRIDGE -> {
+                        val host = desktopBridgeHost ?: "unknown"
+                        val port = desktopBridgePort?.toString() ?: "unknown"
+                        ConnectionCheckLevel.PASS to "Connected over Desktop Bridge: $host:$port"
                     }
                     transportConnected -> ConnectionCheckLevel.PASS to
                             "Connected. mtu=$negotiatedMtu tx=$writeUuid rx=$notifyUuid"
@@ -2486,6 +2668,8 @@ class FlipperBleService : Service() {
         private const val USB_READ_BUFFER_SIZE_BYTES = 4096
         private const val USB_WRITE_CHUNK_SIZE_BYTES = 256
         private const val USB_WRITE_INTER_CHUNK_DELAY_MS = 2L
+        private const val DESKTOP_BRIDGE_CONNECT_TIMEOUT_MS = 2_000
+        private const val DESKTOP_BRIDGE_MAX_FRAME_BYTES = 1024 * 1024
         private const val USB_DATA_BITS = 8
         private const val USB_RPC_PRIME_DRAIN_WINDOW_MS = 220L
         private const val USB_RPC_BAUD_RETRY_DRAIN_WINDOW_MS = 160L
@@ -2523,7 +2707,8 @@ class FlipperBleService : Service() {
 private enum class CommandTransport {
     NONE,
     BLE,
-    USB
+    USB,
+    DESKTOP_BRIDGE
 }
 
 /**

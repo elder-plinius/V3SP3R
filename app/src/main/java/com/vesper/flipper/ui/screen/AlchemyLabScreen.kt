@@ -16,7 +16,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -47,6 +49,12 @@ fun AlchemyLabScreen(
     val isLoadingVault by viewModel.isLoadingVault.collectAsState()
     val vaultStats by viewModel.vaultStats.collectAsState()
     val message by viewModel.message.collectAsState()
+    val project by viewModel.project.collectAsState()
+    val waveformPreview by viewModel.waveformPreview.collectAsState()
+    val selectedLayerIndex by viewModel.selectedLayerIndex.collectAsState()
+    val isPlaying by viewModel.isPlaying.collectAsState()
+    val showExportDialog by viewModel.showExportDialog.collectAsState()
+    val exportedCode by viewModel.exportedCode.collectAsState()
 
     LaunchedEffect(message) {
         message?.let {
@@ -119,11 +127,43 @@ fun AlchemyLabScreen(
                         BlueprintCard(
                             blueprint = bp,
                             onDeploy = { viewModel.deployBlueprint() },
+                            canOpenInEditor = viewModel.canOpenBlueprintInEditor(bp),
+                            onOpenInEditor = { viewModel.openBlueprintInEditor() },
                             onEditSection = { viewModel.editBlueprintSection(it) },
                             onDismiss = { viewModel.clearBlueprint() }
                         )
                     }
                 }
+            }
+
+            item {
+                RfEditorSection(
+                    project = project,
+                    waveformPreview = waveformPreview,
+                    selectedLayerIndex = selectedLayerIndex,
+                    isPlaying = isPlaying,
+                    isSaving = isSaving,
+                    onProjectNameChange = { viewModel.updateProjectName(it) },
+                    onFrequencyChange = { viewModel.updateFrequency(it) },
+                    onPresetChange = { viewModel.selectPreset(it) },
+                    onModulationChange = { viewModel.updateModulation(it) },
+                    onSelectLayer = { viewModel.selectLayer(it) },
+                    onToggleLayer = { viewModel.toggleLayerEnabled(it) },
+                    onDuplicateLayer = { viewModel.duplicateLayer(it) },
+                    onMoveLayerUp = { viewModel.moveLayerUp(it) },
+                    onMoveLayerDown = { viewModel.moveLayerDown(it) },
+                    onRemoveLayer = { viewModel.removeLayer(it) },
+                    onAddLayer = { viewModel.addLayer(it) },
+                    onLayerVolumeChange = { index, volume -> viewModel.updateLayerVolume(index, volume) },
+                    onLayerBitDurationChange = { index, duration -> viewModel.updateLayerBitDuration(index, duration) },
+                    onLayerEncodingChange = { index, encoding -> viewModel.updateLayerEncoding(index, encoding) },
+                    onLayerRepeatCountChange = { index, count -> viewModel.updateLayerRepeatCount(index, count) },
+                    onLayerBitsChange = { index, hex -> viewModel.updateLayerBits(index, hex) },
+                    onNewProject = { viewModel.newProject() },
+                    onPreview = { viewModel.playPreview() },
+                    onExport = { viewModel.showExport() },
+                    onSave = { viewModel.saveToFlipper() }
+                )
             }
 
             // ═══════════════════ THE VAULT ═══════════════════
@@ -212,6 +252,15 @@ fun AlchemyLabScreen(
                 onSave = { viewModel.saveWorkbench() },
                 onDismiss = { viewModel.closeWorkbench() },
                 isSaving = isSaving
+            )
+        }
+
+        if (showExportDialog) {
+            ExportDialog(
+                content = exportedCode.orEmpty(),
+                isSaving = isSaving,
+                onSave = { viewModel.saveToFlipper() },
+                onDismiss = { viewModel.hideExport() }
             )
         }
     }
@@ -313,6 +362,8 @@ private fun TheForgeSection(
 private fun BlueprintCard(
     blueprint: ForgeBlueprint,
     onDeploy: () -> Unit,
+    canOpenInEditor: Boolean,
+    onOpenInEditor: () -> Unit,
     onEditSection: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -393,29 +444,308 @@ private fun BlueprintCard(
             Spacer(modifier = Modifier.height(8.dp))
             Text("Target: ${blueprint.flipperPath}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontFamily = FontFamily.Monospace)
 
-            // Deploy Button
             Spacer(modifier = Modifier.height(12.dp))
-            Button(
-                onClick = onDeploy,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = blueprint.status == ForgeStatus.BLUEPRINT,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = when (blueprint.status) {
-                        ForgeStatus.FORGED -> RiskLow; ForgeStatus.FAILED -> RiskHigh; else -> VesperOrange
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (canOpenInEditor) {
+                    OutlinedButton(
+                        onClick = onOpenInEditor,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Tune, null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Open in RF Editor", fontWeight = FontWeight.Bold)
                     }
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                when (blueprint.status) {
-                    ForgeStatus.BLUEPRINT -> { Icon(Icons.Default.RocketLaunch, null); Spacer(modifier = Modifier.width(8.dp)); Text("Deploy to Flipper", fontWeight = FontWeight.Bold) }
-                    ForgeStatus.FORGING -> { CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp); Spacer(modifier = Modifier.width(8.dp)); Text("Deploying...") }
-                    ForgeStatus.FORGED -> { Icon(Icons.Default.CheckCircle, null); Spacer(modifier = Modifier.width(8.dp)); Text("Deployed!") }
-                    ForgeStatus.FAILED -> { Icon(Icons.Default.Error, null); Spacer(modifier = Modifier.width(8.dp)); Text("Failed") }
+                }
+                Button(
+                    onClick = onDeploy,
+                    modifier = Modifier.weight(1f),
+                    enabled = blueprint.status == ForgeStatus.BLUEPRINT,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = when (blueprint.status) {
+                            ForgeStatus.FORGED -> RiskLow; ForgeStatus.FAILED -> RiskHigh; else -> VesperOrange
+                        }
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    when (blueprint.status) {
+                        ForgeStatus.BLUEPRINT -> { Icon(Icons.Default.RocketLaunch, null); Spacer(modifier = Modifier.width(8.dp)); Text("Deploy", fontWeight = FontWeight.Bold) }
+                        ForgeStatus.FORGING -> { CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp); Spacer(modifier = Modifier.width(8.dp)); Text("Deploying...") }
+                        ForgeStatus.FORGED -> { Icon(Icons.Default.CheckCircle, null); Spacer(modifier = Modifier.width(8.dp)); Text("Deployed!") }
+                        ForgeStatus.FAILED -> { Icon(Icons.Default.Error, null); Spacer(modifier = Modifier.width(8.dp)); Text("Failed") }
+                    }
                 }
             }
         }
     }
 }
+
+@Composable
+private fun RfEditorSection(
+    project: AlchemyProject,
+    waveformPreview: List<Float>,
+    selectedLayerIndex: Int?,
+    isPlaying: Boolean,
+    isSaving: Boolean,
+    onProjectNameChange: (String) -> Unit,
+    onFrequencyChange: (Long) -> Unit,
+    onPresetChange: (SignalPreset) -> Unit,
+    onModulationChange: (ModulationType) -> Unit,
+    onSelectLayer: (Int?) -> Unit,
+    onToggleLayer: (Int) -> Unit,
+    onDuplicateLayer: (Int) -> Unit,
+    onMoveLayerUp: (Int) -> Unit,
+    onMoveLayerDown: (Int) -> Unit,
+    onRemoveLayer: (Int) -> Unit,
+    onAddLayer: (LayerType) -> Unit,
+    onLayerVolumeChange: (Int, Float) -> Unit,
+    onLayerBitDurationChange: (Int, Int) -> Unit,
+    onLayerEncodingChange: (Int, BitEncoding) -> Unit,
+    onLayerRepeatCountChange: (Int, Int) -> Unit,
+    onLayerBitsChange: (Int, String) -> Unit,
+    onNewProject: () -> Unit,
+    onPreview: () -> Unit,
+    onExport: () -> Unit,
+    onSave: () -> Unit
+) {
+    val selectedLayer = selectedLayerIndex?.let { project.layers.getOrNull(it) }
+    var addMenuOpen by remember { mutableStateOf(false) }
+    var modulationMenuOpen by remember { mutableStateOf(false) }
+    var encodingMenuOpen by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
+        border = BorderStroke(1.dp, VesperAccent.copy(alpha = 0.25f))
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Tune, null, tint = VesperAccent, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("RF EDITOR", style = MaterialTheme.typography.labelLarge, color = VesperAccent, letterSpacing = 2.sp)
+                }
+                Text("${project.layers.size} layers", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            OutlinedTextField(
+                value = project.name,
+                onValueChange = onProjectNameChange,
+                label = { Text("Project") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = VesperAccent, cursorColor = VesperAccent)
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = project.frequency.toString(),
+                    onValueChange = { it.toLongOrNull()?.let(onFrequencyChange) },
+                    label = { Text("Frequency Hz") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = VesperAccent, cursorColor = VesperAccent)
+                )
+                Box(modifier = Modifier.weight(1f)) {
+                    OutlinedButton(onClick = { modulationMenuOpen = true }, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+                        Text(project.modulation.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(Icons.Default.ExpandMore, null)
+                    }
+                    DropdownMenu(expanded = modulationMenuOpen, onDismissRequest = { modulationMenuOpen = false }) {
+                        ModulationType.entries.forEach { modulation ->
+                            DropdownMenuItem(
+                                text = { Text(modulation.displayName) },
+                                onClick = { onModulationChange(modulation); modulationMenuOpen = false }
+                            )
+                        }
+                    }
+                }
+            }
+
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(SignalPreset.entries) { preset ->
+                    FilterChip(
+                        selected = project.preset == preset,
+                        onClick = { onPresetChange(preset) },
+                        label = { Text(preset.displayName) },
+                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = VesperAccent, selectedLabelColor = Color.White)
+                    )
+                }
+            }
+
+            RfWaveformPreview(samples = waveformPreview, modifier = Modifier.fillMaxWidth().height(120.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onNewProject, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Add, null); Spacer(modifier = Modifier.width(6.dp)); Text("New") }
+                OutlinedButton(onClick = onPreview, enabled = !isPlaying, modifier = Modifier.weight(1f)) {
+                    if (isPlaying) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    else Icon(Icons.Default.PlayArrow, null)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(if (isPlaying) "Playing" else "Preview")
+                }
+                OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) { Icon(Icons.Default.IosShare, null); Spacer(modifier = Modifier.width(6.dp)); Text("Export") }
+            }
+            Button(
+                onClick = onSave,
+                enabled = !isSaving,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = VesperOrange)
+            ) {
+                if (isSaving) CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                else Icon(Icons.Default.Save, null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Save to Flipper")
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("LAYERS", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.sp)
+                Box {
+                    TextButton(onClick = { addMenuOpen = true }) { Icon(Icons.Default.Add, null); Spacer(modifier = Modifier.width(4.dp)); Text("Add Layer") }
+                    DropdownMenu(expanded = addMenuOpen, onDismissRequest = { addMenuOpen = false }) {
+                        listOf(LayerType.CARRIER, LayerType.PREAMBLE, LayerType.SYNC, LayerType.DATA, LayerType.BURST).forEach { type ->
+                            DropdownMenuItem(text = { Text(type.displayName) }, onClick = { onAddLayer(type); addMenuOpen = false })
+                        }
+                    }
+                }
+            }
+
+            project.layers.forEachIndexed { index, layer ->
+                RfLayerRow(
+                    layer = layer,
+                    selected = index == selectedLayerIndex,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < project.layers.lastIndex,
+                    onSelect = { onSelectLayer(index) },
+                    onToggle = { onToggleLayer(index) },
+                    onDuplicate = { onDuplicateLayer(index) },
+                    onMoveUp = { onMoveLayerUp(index) },
+                    onMoveDown = { onMoveLayerDown(index) },
+                    onRemove = { onRemoveLayer(index) }
+                )
+            }
+
+            selectedLayer?.let { layer ->
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                Text("SELECTED: ${layer.name}", style = MaterialTheme.typography.labelSmall, color = VesperAccent, letterSpacing = 1.sp)
+                Text("Volume ${((layer.volume * 100).toInt())}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Slider(value = layer.volume, onValueChange = { onLayerVolumeChange(selectedLayerIndex, it) }, valueRange = 0f..1f)
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = layer.pattern.bitDuration.toString(),
+                        onValueChange = { it.toIntOrNull()?.let { value -> onLayerBitDurationChange(selectedLayerIndex, value) } },
+                        label = { Text("Bit us") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = VesperAccent, cursorColor = VesperAccent)
+                    )
+                    OutlinedTextField(
+                        value = layer.timing.repeatCount.toString(),
+                        onValueChange = { it.toIntOrNull()?.let { value -> onLayerRepeatCountChange(selectedLayerIndex, value) } },
+                        label = { Text("Repeats") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = VesperAccent, cursorColor = VesperAccent)
+                    )
+                }
+
+                Box {
+                    OutlinedButton(onClick = { encodingMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(layer.pattern.encoding.displayName, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(Icons.Default.ExpandMore, null)
+                    }
+                    DropdownMenu(expanded = encodingMenuOpen, onDismissRequest = { encodingMenuOpen = false }) {
+                        BitEncoding.entries.forEach { encoding ->
+                            DropdownMenuItem(
+                                text = { Text(encoding.displayName) },
+                                onClick = { onLayerEncodingChange(selectedLayerIndex, encoding); encodingMenuOpen = false }
+                            )
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = bitsToHex(layer.pattern.bits),
+                    onValueChange = { onLayerBitsChange(selectedLayerIndex, it) },
+                    label = { Text("Bits as hex") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = VesperAccent, cursorColor = VesperAccent)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RfLayerRow(
+    layer: SignalLayer,
+    selected: Boolean,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onSelect: () -> Unit,
+    onToggle: () -> Unit,
+    onDuplicate: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onRemove: () -> Unit
+) {
+    val color = Color(layer.color)
+    Surface(
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = onSelect),
+        color = if (selected) color.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, if (selected) color else Color.Transparent),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = layer.enabled, onCheckedChange = { onToggle() }, modifier = Modifier.size(width = 44.dp, height = 28.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(layer.type.icon, style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(layer.name, color = Color.White, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${layer.pattern.bits.size} bits / ${layer.pattern.bitDuration}us / x${layer.timing.repeatCount}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = onMoveUp, enabled = canMoveUp, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ArrowUpward, null, modifier = Modifier.size(18.dp)) }
+            IconButton(onClick = onMoveDown, enabled = canMoveDown, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ArrowDownward, null, modifier = Modifier.size(18.dp)) }
+            IconButton(onClick = onDuplicate, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp)) }
+            IconButton(onClick = onRemove, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.Delete, null, tint = RiskHigh, modifier = Modifier.size(18.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun RfWaveformPreview(samples: List<Float>, modifier: Modifier = Modifier) {
+    val waveColor = VesperAccent
+    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.18f)
+
+    Canvas(modifier = modifier.clip(RoundedCornerShape(8.dp)).background(Color(0xFF0A0E14))) {
+        val padding = 12f
+        val usableWidth = size.width - padding * 2
+        val usableHeight = size.height - padding * 2
+        repeat(5) { i ->
+            val y = padding + usableHeight * i / 4
+            drawLine(gridColor, Offset(padding, y), Offset(size.width - padding, y), strokeWidth = 1f)
+        }
+        if (samples.isEmpty()) return@Canvas
+
+        val path = Path()
+        samples.forEachIndexed { index, value ->
+            val x = padding + usableWidth * index / (samples.lastIndex.coerceAtLeast(1))
+            val y = padding + (1f - value.coerceIn(0f, 1f)) * usableHeight
+            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(path, color = waveColor, style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    }
+}
+
+private fun bitsToHex(bits: List<Boolean>): String =
+    bits.chunked(4).joinToString("") { chunk ->
+        chunk.foldIndexed(0) { index, acc, bit -> if (bit) acc or (1 shl (3 - index)) else acc }
+            .toString(16)
+            .uppercase()
+    }
 
 // ═══════════════════════════════════════════════════════════
 // THE VAULT HEADER & FILTERS
@@ -593,7 +923,7 @@ private fun WorkbenchDialog(
                     }
                 }
 
-                Divider()
+                HorizontalDivider()
 
                 OutlinedTextField(
                     value = content,
@@ -610,6 +940,65 @@ private fun WorkbenchDialog(
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Cancel") }
+                    Button(
+                        onClick = onSave,
+                        modifier = Modifier.weight(1f),
+                        enabled = !isSaving,
+                        colors = ButtonDefaults.buttonColors(containerColor = VesperOrange)
+                    ) {
+                        if (isSaving) CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                        else Icon(Icons.Default.Save, null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Save to Flipper")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExportDialog(
+    content: String,
+    isSaving: Boolean,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.85f),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.IosShare, null, tint = VesperOrange)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("EXPORT RAW", style = MaterialTheme.typography.labelLarge, color = VesperOrange, letterSpacing = 1.sp)
+                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close") }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0A0E14)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Box(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
+                        Text(
+                            content,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = VesperAccent.copy(alpha = 0.9f),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) { Text("Close") }
                     Button(
                         onClick = onSave,
                         modifier = Modifier.weight(1f),

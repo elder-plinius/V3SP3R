@@ -160,6 +160,10 @@ class DeviceViewModel @Inject constructor(
         bleServiceManager.connectUsb()
     }
 
+    fun connectDesktopBridge() {
+        bleServiceManager.connectDesktopBridge()
+    }
+
     fun disconnect() {
         bleServiceManager.disconnect()
         _deviceInfo.value = null

@@ -136,6 +136,7 @@ class OpenRouterClient @Inject constructor(
                     apiKey = apiKey,
                     model = candidateModel,
                     messages = requestMessages,
+                    sessionId = sessionId,
                     includeGlassesActions = glassesEnabled
                 )
             )
@@ -438,6 +439,7 @@ class OpenRouterClient @Inject constructor(
         apiKey: String,
         model: String,
         messages: List<OpenRouterMessage>,
+        sessionId: String? = null,
         includeGlassesActions: Boolean = false
     ): Request {
         val tool = if (includeGlassesActions) EXECUTE_COMMAND_TOOL else buildToolWithoutGlasses()
@@ -446,6 +448,7 @@ class OpenRouterClient @Inject constructor(
             messages = messages,
             tools = listOf(tool),
             toolChoice = "auto",
+            sessionId = sessionId?.takeIf { it.isNotBlank() },
             maxTokens = TOOL_CALL_RESPONSE_MAX_TOKENS
         )
 
@@ -1737,6 +1740,8 @@ data class OpenRouterRequest(
     val tools: List<OpenRouterTool>? = null,
     @SerialName("tool_choice")
     val toolChoice: String? = null,
+    @SerialName("session_id")
+    val sessionId: String? = null,
     @SerialName("max_tokens")
     val maxTokens: Int? = null
 )
