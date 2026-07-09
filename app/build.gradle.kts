@@ -89,7 +89,7 @@ android {
         buildConfigField(
             "String",
             "OPENROUTER_DEFAULT_MODEL",
-            "\"${localProps.getProperty("OPENROUTER_DEFAULT_MODEL", "").replace("\"", "\\\"")}\""
+            "\"${localProps.getProperty("OPENROUTER_DEFAULT_MODEL", "openrouter/auto").replace("\"", "\\\"")}\""
         )
     }
 
