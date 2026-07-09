@@ -242,25 +242,24 @@ class CommandParsingEdgeCaseTest {
     @Test
     fun `fallback - args wrapped in single-element array`() {
         // Some models: "args": [{"path": "/ext"}]
-        val argsElement: JsonElement = JsonArray(listOf(
+        val argsArray = JsonArray(listOf(
             buildJsonObject { put("path", "/ext/nfc") }
         ))
 
-        val unwrapped = when {
-            argsElement is JsonArray && argsElement.size == 1 && argsElement[0] is JsonObject ->
-                argsElement[0] as JsonObject
-            else -> fail("Should have unwrapped single-element array")
+        if (argsArray.size != 1 || argsArray.first() !is JsonObject) {
+            fail("Should have unwrapped single-element array")
         }
+        val unwrapped = argsArray.first() as JsonObject
         assertEquals("/ext/nfc", unwrapped["path"]?.jsonPrimitive?.content)
     }
 
     @Test
     fun `fallback - args as empty array yields empty object`() {
-        val argsElement: JsonElement = JsonArray(emptyList())
-        val result = when {
-            argsElement is JsonArray && argsElement.isEmpty() -> JsonObject(emptyMap())
-            else -> fail("Should have produced empty JsonObject")
+        val argsArray = JsonArray(emptyList())
+        if (argsArray.isNotEmpty()) {
+            fail("Should have produced empty JsonObject")
         }
+        val result = JsonObject(emptyMap())
         assertTrue(result.isEmpty())
     }
 

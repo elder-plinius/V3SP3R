@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
+import com.vesper.flipper.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -34,7 +35,9 @@ class SettingsStore @Inject constructor(
     private val SELECTED_MODEL = stringPreferencesKey("selected_model")
 
     val selectedModel: Flow<String> = context.dataStore.data.map { preferences ->
-        preferences[SELECTED_MODEL] ?: DEFAULT_MODEL
+        preferences[SELECTED_MODEL]
+            ?: BuildConfig.OPENROUTER_DEFAULT_MODEL.takeIf { it.isNotBlank() }
+            ?: DEFAULT_MODEL
     }
 
     suspend fun setSelectedModel(model: String) {
@@ -311,6 +314,7 @@ class SettingsStore @Inject constructor(
 
         // Used when fetching live catalog fails (offline/rate-limited).
         val FALLBACK_MODELS = listOf(
+            ModelInfo("openrouter/auto", "Auto Router", "OpenRouter intelligent model selection"),
             ModelInfo("nousresearch/hermes-4-405b", "Hermes 4 405B", "Largest Hermes 4"),
             ModelInfo("anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5", "Latest Anthropic"),
             ModelInfo("openai/gpt-oss-120b", "GPT-OSS 120B", "Latest OpenAI"),

@@ -240,7 +240,8 @@ data class SignalLayer(
     val volume: Float = 1.0f,
     val pattern: BitPattern,
     val timing: TimingConfig,
-    val color: Long = 0xFFFF6B00
+    val color: Long = 0xFFFF6B00,
+    val rawTimings: List<Int>? = null
 )
 
 enum class LayerType(val displayName: String, val icon: String) {
@@ -328,6 +329,7 @@ object SignalAlchemist {
     }
 
     private fun generateLayerData(layer: SignalLayer, modulation: ModulationType): List<Int> {
+        layer.rawTimings?.let { return it }
         return when (layer.type) {
             LayerType.CARRIER -> listOf(layer.pattern.bitDuration * layer.pattern.bits.size)
             LayerType.DATA -> generateDataBits(layer)
@@ -417,7 +419,10 @@ object SignalAlchemist {
                 }
             }
         }
-        return result.map { (it * layer.volume).toInt() }
+        return result.map { timing ->
+            val scaled = (timing * layer.volume).toInt()
+            if (scaled != 0) scaled else if (timing > 0) 1 else -1
+        }
     }
 
     fun exportToFlipperFormat(project: AlchemyProject): String {
@@ -436,10 +441,72 @@ object SignalAlchemist {
         }
     }
 
+    fun canImportSubGhzRaw(content: String): Boolean {
+        val lines = content.lineSequence().map { it.trim() }
+        var hasRawProtocol = false
+        var hasRawData = false
+        for (line in lines) {
+            hasRawProtocol = hasRawProtocol || line.startsWith("Protocol:") && line.substringAfter(":").trim() == "RAW"
+            hasRawData = hasRawData || line.startsWith("RAW_Data:")
+            if (hasRawProtocol && hasRawData) return true
+        }
+        return false
+    }
+
+    fun importSubGhzRaw(content: String, name: String = "Imported RAW"): AlchemyProject? {
+        if (!canImportSubGhzRaw(content)) return null
+
+        val lines = content.lines().map { it.trim() }
+        val frequency = lines.firstNotNullOfOrNull { line ->
+            line.takeIf { it.startsWith("Frequency:") }?.substringAfter(":")?.trim()?.toLongOrNull()
+        } ?: return null
+        val preset = SignalPreset.entries.minByOrNull { kotlin.math.abs(it.frequency - frequency) } ?: SignalPreset.CUSTOM
+        val modulation = lines.firstNotNullOfOrNull { line ->
+            line.takeIf { it.startsWith("Preset:") }?.substringAfter(":")?.trim()?.let { presetName ->
+                ModulationType.entries.firstOrNull { it.flipperPreset == presetName }
+            }
+        } ?: ModulationType.CUSTOM
+        val timings = lines
+            .filter { it.startsWith("RAW_Data:") }
+            .flatMap { it.substringAfter(":").trim().split("\\s+".toRegex()) }
+            .mapNotNull { it.toIntOrNull() }
+            .filter { it != 0 }
+
+        if (timings.size < 2) return null
+
+        val bitDuration = timings
+            .map { kotlin.math.abs(it) }
+            .sorted()
+            .let { it[it.size / 2] }
+            .coerceIn(50, 5000)
+
+        return AlchemyProject(
+            name = name,
+            frequency = frequency,
+            modulation = modulation,
+            preset = preset,
+            layers = listOf(
+                SignalLayer(
+                    name = "Imported RAW",
+                    type = LayerType.DATA,
+                    pattern = BitPattern(
+                        bits = timings.map { it > 0 },
+                        bitDuration = bitDuration,
+                        encoding = BitEncoding.NRZ
+                    ),
+                    timing = TimingConfig(),
+                    color = 0xFFFF6B00,
+                    rawTimings = timings
+                )
+            )
+        )
+    }
+
     fun generateWaveformPreview(project: AlchemyProject, width: Int = 500): List<Float> {
         val rawData = synthesize(project)
         if (rawData.isEmpty()) return List(width) { 0.5f }
         val totalDuration = rawData.sumOf { kotlin.math.abs(it) }
+        if (totalDuration == 0) return List(width) { 0.5f }
         val samplesPerUnit = width.toFloat() / totalDuration
         val samples = mutableListOf<Float>()
         rawData.forEach { timing ->

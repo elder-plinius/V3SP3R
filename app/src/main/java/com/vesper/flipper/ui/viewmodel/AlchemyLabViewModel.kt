@@ -178,6 +178,24 @@ class AlchemyLabViewModel @Inject constructor(
         }
     }
 
+    fun canOpenBlueprintInEditor(blueprint: ForgeBlueprint): Boolean =
+        blueprint.payloadType == PayloadType.SUB_GHZ &&
+            SignalAlchemist.canImportSubGhzRaw(blueprint.generatedCode)
+
+    fun openBlueprintInEditor() {
+        val blueprint = _currentBlueprint.value ?: return
+        val imported = SignalAlchemist.importSubGhzRaw(
+            content = blueprint.generatedCode,
+            name = blueprint.title
+        ) ?: run {
+            _message.value = "Only SubGHz RAW payloads can open in RF Editor"
+            return
+        }
+        _project.value = imported
+        _selectedLayerIndex.value = imported.layers.indices.firstOrNull()
+        _message.value = "Opened ${blueprint.title} in RF Editor"
+    }
+
     fun clearBlueprint() {
         _currentBlueprint.value = null
         _forgeInput.value = ""
@@ -377,13 +395,13 @@ class AlchemyLabViewModel @Inject constructor(
     fun selectLayer(index: Int?) { _selectedLayerIndex.value = index }
     fun toggleLayerEnabled(index: Int) { updateLayer(index) { it.copy(enabled = !it.enabled) } }
     fun updateLayerVolume(index: Int, volume: Float) { updateLayer(index) { it.copy(volume = volume.coerceIn(0f, 1f)) } }
-    fun updateLayerBitDuration(index: Int, duration: Int) { updateLayer(index) { l -> l.copy(pattern = l.pattern.copy(bitDuration = duration.coerceIn(50, 5000))) } }
-    fun updateLayerEncoding(index: Int, encoding: BitEncoding) { updateLayer(index) { l -> l.copy(pattern = l.pattern.copy(encoding = encoding)) } }
+    fun updateLayerBitDuration(index: Int, duration: Int) { updateLayer(index) { l -> l.copy(pattern = l.pattern.copy(bitDuration = duration.coerceIn(50, 5000)), rawTimings = null) } }
+    fun updateLayerEncoding(index: Int, encoding: BitEncoding) { updateLayer(index) { l -> l.copy(pattern = l.pattern.copy(encoding = encoding), rawTimings = null) } }
     fun updateLayerRepeatCount(index: Int, count: Int) { updateLayer(index) { l -> l.copy(timing = l.timing.copy(repeatCount = count.coerceIn(1, 100))) } }
     fun updateLayerBits(index: Int, hexPattern: String) {
         updateLayer(index) { layer ->
-            val bits = hexPattern.flatMap { char -> val nibble = char.toString().toIntOrNull(16) ?: 0; (3 downTo 0).map { (nibble shr it) and 1 == 1 } }
-            layer.copy(pattern = layer.pattern.copy(bits = bits))
+            val bits = hexPattern.filter { it.isDigit() || it.lowercaseChar() in 'a'..'f' }.flatMap { char -> val nibble = char.toString().toInt(16); (3 downTo 0).map { (nibble shr it) and 1 == 1 } }
+            layer.copy(pattern = layer.pattern.copy(bits = bits), rawTimings = null)
         }
     }
     fun moveLayerUp(index: Int) {
@@ -410,6 +428,7 @@ class AlchemyLabViewModel @Inject constructor(
                 val content = SignalAlchemist.exportToFlipperFormat(_project.value)
                 val filename = _project.value.name.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(32)
                 val path = "/ext/subghz/alchemy_$filename.sub"
+                fileSystem.createDirectory(path.substringBeforeLast("/"))
                 val result = fileSystem.writeFile(path, content)
                 if (result.isSuccess) { _message.value = "Saved to $path"; _showExportDialog.value = false }
                 else _message.value = "Failed to save: ${result.exceptionOrNull()?.message}"

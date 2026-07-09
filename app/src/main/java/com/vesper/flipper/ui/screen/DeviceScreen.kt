@@ -21,6 +21,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.vesper.flipper.BuildConfig
 import com.vesper.flipper.R
 import com.vesper.flipper.ble.CliCapabilityLevel
 import com.vesper.flipper.ble.CliCapabilityStatus
@@ -176,7 +177,8 @@ fun DeviceScreen(
                         isScanning = connectionState is ConnectionState.Scanning,
                         onStartScan = { viewModel.startScan() },
                         onStopScan = { viewModel.stopScan() },
-                        onConnectUsb = { viewModel.connectUsb() }
+                        onConnectUsb = { viewModel.connectUsb() },
+                        onConnectDesktopBridge = { viewModel.connectDesktopBridge() }
                     )
                 }
 
@@ -955,7 +957,8 @@ private fun ScanSection(
     isScanning: Boolean,
     onStartScan: () -> Unit,
     onStopScan: () -> Unit,
-    onConnectUsb: () -> Unit
+    onConnectUsb: () -> Unit,
+    onConnectDesktopBridge: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -990,6 +993,17 @@ private fun ScanSection(
             Icon(Icons.Default.Usb, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
             Text("Connect via USB")
+        }
+
+        if (BuildConfig.DEBUG) {
+            OutlinedButton(
+                onClick = onConnectDesktopBridge,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.DesktopWindows, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Connect via Desktop Bridge")
+            }
         }
     }
 }
