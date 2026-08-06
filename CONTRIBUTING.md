@@ -14,8 +14,8 @@ Thanks for your interest in contributing! Vesper is an open-source project and w
    ```bash
    git checkout -b feature/your-feature-name
    ```
-4. **Open in Android Studio** and let Gradle sync
-5. **Build and test** your changes
+4. Open the relevant platform project: Android Studio for Android or `ios/Vesper.xcodeproj` in Xcode for iOS
+5. Build and test your changes
 
 ### Requirements
 
@@ -23,6 +23,7 @@ Thanks for your interest in contributing! Vesper is an open-source project and w
 - JDK 17+
 - Android SDK with API 26+ (Android 8.0)
 - A Flipper Zero device (for testing hardware features)
+- Xcode 16+ and an iPhone running iOS 17+ (for iOS development)
 
 ## Development Guidelines
 
@@ -32,6 +33,7 @@ Thanks for your interest in contributing! Vesper is an open-source project and w
 - Use meaningful variable and function names
 - Keep functions focused — one function, one responsibility
 - Use Jetpack Compose best practices for UI code
+- Use native SwiftUI navigation, semantic colors, Dynamic Type, and Swift 6 strict-concurrency practices on iOS
 
 ### Architecture
 
@@ -41,7 +43,21 @@ Vesper follows a layered architecture:
 - **Domain Layer** — Business logic, command execution, risk assessment (in `domain/`)
 - **Data Layer** — Persistence, API clients, BLE communication (in `data/`, `ai/`, `ble/`)
 
+The iOS alpha mirrors these boundaries through `ios/Vesper/Features`, `ios/Vesper/Services`, and the platform-neutral `ios/VesperCore` Swift package. Keep Android and iOS command JSON names aligned with `docs/execute_command_schema.json`.
+
 When adding features, place code in the appropriate layer. If unsure, look at how existing features are structured.
+
+### iOS checks
+
+```bash
+swift test --package-path ios/VesperCore
+xcodebuild test \
+  -project ios/Vesper.xcodeproj \
+  -scheme Vesper \
+  -destination 'platform=iOS Simulator,name=iPhone 16'
+```
+
+BLE/RPC changes must also pass the physical-device gate documented in `ios/README.md` before being described as production-ready.
 
 ### Security
 

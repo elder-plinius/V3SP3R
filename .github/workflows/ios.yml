@@ -1,0 +1,60 @@
+name: iOS alpha
+
+on:
+  pull_request:
+    paths:
+      - 'ios/**'
+      - 'docs/execute_command_schema.json'
+      - 'app/**'
+      - '.github/workflows/ios.yml'
+  push:
+    branches: [main, feature-ios]
+
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Resolve packages
+        run: xcodebuild -resolvePackageDependencies -project ios/Vesper.xcodeproj -scheme Vesper
+      - name: Test VesperCore
+        run: swift test --package-path ios/VesperCore
+      - name: Build and test iOS
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project ios/Vesper.xcodeproj \
+            -scheme Vesper \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Verify generated protobuf sources
+        run: |
+          brew install protobuf
+          git clone --quiet https://github.com/apple/swift-protobuf.git /tmp/swift-protobuf
+          git -C /tmp/swift-protobuf checkout --quiet c6fe6442e6a64250495669325044052e113e990c
+          swift build --package-path /tmp/swift-protobuf -c release --product protoc-gen-swift
+          ios/Scripts/regenerate-protos.sh /tmp/swift-protobuf/.build/release/protoc-gen-swift
+          git diff --exit-code -- ios/Protos ios/Vesper/Generated
+
+  android-schema-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Run Android tests
+        run: ./gradlew testDebugUnitTest
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
