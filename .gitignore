@@ -57,3 +57,10 @@ secrets/
 
 # Crash logs
 crash-reports/
+
+# Xcode / SwiftPM local state
+ios/**/xcuserdata/
+ios/**/.swiftpm/
+ios/**/.build/
+ios/DerivedData/
+*.xcuserstate

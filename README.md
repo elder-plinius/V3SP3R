@@ -15,6 +15,7 @@ No menus. No manuals. Just natural language prompting.
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![Android](https://img.shields.io/badge/Android-8.0%2B-green.svg)](https://developer.android.com)
+[![iOS Alpha](https://img.shields.io/badge/iOS-17%2B-blue.svg)](ios/README.md)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.2-purple.svg)](https://kotlinlang.org)
 
 ---
@@ -127,6 +128,8 @@ Vesper works with any model on [OpenRouter](https://openrouter.ai). For the best
 ---
 
 ## Quick Start
+
+> The native iOS 17+ implementation is under [`ios/`](ios/README.md). It is currently an internal alpha with a required physical-device/Flipper validation gate.
 
 ### Requirements
 

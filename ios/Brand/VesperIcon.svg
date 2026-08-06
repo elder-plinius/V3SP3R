@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 108 108">
+  <defs>
+    <radialGradient id="vignette">
+      <stop offset="0" stop-color="#8b2038" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#030508" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="108" height="108" fill="#030508"/>
+  <rect width="108" height="108" fill="url(#vignette)"/>
+  <circle cx="54" cy="54" r="40" fill="none" stroke="#8b2038" stroke-width="1.8"/>
+  <circle cx="54" cy="54" r="32" fill="none" stroke="#8b2038" stroke-opacity=".27" stroke-width=".8"/>
+  <circle cx="54" cy="54" r="26" fill="none" stroke="#8b2038" stroke-opacity=".16" stroke-width=".5"/>
+  <g fill="none" stroke="#8b2038" stroke-opacity=".13" stroke-width=".4">
+    <path d="M74 20 34 88M34 20l40 68"/>
+    <path d="M54 14v80M14 54h80" stroke-width=".3"/>
+  </g>
+  <path fill="#8b2038" d="M40 34h6l8 28 8-28h6L56 80h-4z"/>
+  <path fill="#d4af37" fill-opacity=".13" d="M42 37h3l8 29h-2z"/>
+</svg>

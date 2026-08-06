@@ -1,0 +1,206 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+000000000000000000000002 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000001 /* AppModel.swift */; };
+000000000000000000000004 /* PersistenceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000003 /* PersistenceModels.swift */; };
+000000000000000000000006 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000005 /* RootView.swift */; };
+000000000000000000000008 /* VesperApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000007 /* VesperApp.swift */; };
+00000000000000000000000A /* AuditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000009 /* AuditView.swift */; };
+00000000000000000000000C /* ApprovalSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000B /* ApprovalSheet.swift */; };
+00000000000000000000000E /* CameraPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000D /* CameraPicker.swift */; };
+000000000000000000000010 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000F /* ChatView.swift */; };
+000000000000000000000012 /* DeviceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000011 /* DeviceView.swift */; };
+000000000000000000000014 /* FileBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000013 /* FileBrowserView.swift */; };
+000000000000000000000016 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000015 /* OnboardingView.swift */; };
+000000000000000000000018 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000017 /* SettingsView.swift */; };
+00000000000000000000001A /* application.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000019 /* application.pb.swift */; };
+00000000000000000000001C /* desktop.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000001B /* desktop.pb.swift */; };
+00000000000000000000001E /* flipper.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000001D /* flipper.pb.swift */; };
+000000000000000000000020 /* gpio.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000001F /* gpio.pb.swift */; };
+000000000000000000000022 /* gui.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000021 /* gui.pb.swift */; };
+000000000000000000000024 /* property.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000023 /* property.pb.swift */; };
+000000000000000000000026 /* storage.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000025 /* storage.pb.swift */; };
+000000000000000000000028 /* system.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000027 /* system.pb.swift */; };
+00000000000000000000002A /* AuditStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000029 /* AuditStream.swift */; };
+00000000000000000000002C /* CoreBluetoothTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000002B /* CoreBluetoothTransport.swift */; };
+00000000000000000000002E /* FlipperRPCService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000002D /* FlipperRPCService.swift */; };
+000000000000000000000030 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000002F /* KeychainStore.swift */; };
+000000000000000000000032 /* OpenRouterClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000031 /* OpenRouterClient.swift */; };
+000000000000000000000034 /* RPCFrameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000033 /* RPCFrameTests.swift */; };
+000000000000000000000036 /* VesperUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000035 /* VesperUITests.swift */; };
+000000000000000000000038 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000037 /* Assets.xcassets */; };
+00000000000000000000003A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000039 /* PrivacyInfo.xcprivacy */; };
+000000000000000000000065 /* VesperCore in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000063 /* VesperCore */; };
+000000000000000000000066 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000064 /* SwiftProtobuf */; };
+000000000000000000000067 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000064 /* SwiftProtobuf */; };
+000000000000000000000068 /* VesperCore in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000063 /* VesperCore */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+00000000000000000000005D = {isa = PBXContainerItemProxy; containerPortal = 00000000000000000000004D; proxyType = 1; remoteGlobalIDString = 00000000000000000000004E; remoteInfo = Vesper; };
+00000000000000000000005E = {isa = PBXContainerItemProxy; containerPortal = 00000000000000000000004D; proxyType = 1; remoteGlobalIDString = 00000000000000000000004E; remoteInfo = Vesper; };
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+000000000000000000000001 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/App/AppModel.swift"; sourceTree = "<group>"; };
+000000000000000000000003 /* PersistenceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/App/PersistenceModels.swift"; sourceTree = "<group>"; };
+000000000000000000000005 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/App/RootView.swift"; sourceTree = "<group>"; };
+000000000000000000000007 /* VesperApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/App/VesperApp.swift"; sourceTree = "<group>"; };
+000000000000000000000009 /* AuditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Features/Audit/AuditView.swift"; sourceTree = "<group>"; };
+00000000000000000000000B /* ApprovalSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Features/Chat/ApprovalSheet.swift"; sourceTree = "<group>"; };
+00000000000000000000000D /* CameraPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Features/Chat/CameraPicker.swift"; sourceTree = "<group>"; };
+00000000000000000000000F /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Features/Chat/ChatView.swift"; sourceTree = "<group>"; };
+000000000000000000000011 /* DeviceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Features/Device/DeviceView.swift"; sourceTree = "<group>"; };
+000000000000000000000013 /* FileBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Features/Files/FileBrowserView.swift"; sourceTree = "<group>"; };
+000000000000000000000015 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Features/Onboarding/OnboardingView.swift"; sourceTree = "<group>"; };
+000000000000000000000017 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Features/Settings/SettingsView.swift"; sourceTree = "<group>"; };
+000000000000000000000019 /* application.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Generated/application.pb.swift"; sourceTree = "<group>"; };
+00000000000000000000001B /* desktop.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Generated/desktop.pb.swift"; sourceTree = "<group>"; };
+00000000000000000000001D /* flipper.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Generated/flipper.pb.swift"; sourceTree = "<group>"; };
+00000000000000000000001F /* gpio.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Generated/gpio.pb.swift"; sourceTree = "<group>"; };
+000000000000000000000021 /* gui.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Generated/gui.pb.swift"; sourceTree = "<group>"; };
+000000000000000000000023 /* property.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Generated/property.pb.swift"; sourceTree = "<group>"; };
+000000000000000000000025 /* storage.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Generated/storage.pb.swift"; sourceTree = "<group>"; };
+000000000000000000000027 /* system.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Generated/system.pb.swift"; sourceTree = "<group>"; };
+000000000000000000000029 /* AuditStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Services/AuditStream.swift"; sourceTree = "<group>"; };
+00000000000000000000002B /* CoreBluetoothTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Services/CoreBluetoothTransport.swift"; sourceTree = "<group>"; };
+00000000000000000000002D /* FlipperRPCService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Services/FlipperRPCService.swift"; sourceTree = "<group>"; };
+00000000000000000000002F /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Services/KeychainStore.swift"; sourceTree = "<group>"; };
+000000000000000000000031 /* OpenRouterClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Vesper/Services/OpenRouterClient.swift"; sourceTree = "<group>"; };
+000000000000000000000033 /* RPCFrameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VesperTests/RPCFrameTests.swift"; sourceTree = "<group>"; };
+000000000000000000000035 /* VesperUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VesperUITests/VesperUITests.swift"; sourceTree = "<group>"; };
+000000000000000000000037 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Vesper/Resources/Assets.xcassets; sourceTree = "<group>"; };
+000000000000000000000039 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = Vesper/Resources/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+00000000000000000000003B /* Vesper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vesper.app; sourceTree = BUILT_PRODUCTS_DIR; };
+00000000000000000000003C /* VesperTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VesperTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+00000000000000000000003D /* VesperUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VesperUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+00000000000000000000004A = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000065, 000000000000000000000066,); runOnlyForDeploymentPostprocessing = 0; };
+00000000000000000000004B = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000067, 000000000000000000000068,); runOnlyForDeploymentPostprocessing = 0; };
+00000000000000000000004C = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+00000000000000000000003F = {isa = PBXGroup; children = (000000000000000000000040 /* Vesper */, 000000000000000000000042 /* VesperTests */, 000000000000000000000043 /* VesperUITests */, 000000000000000000000041 /* Resources */, 00000000000000000000003E /* Products */,); sourceTree = "<group>"; };
+000000000000000000000040 /* Vesper */ = {isa = PBXGroup; children = (000000000000000000000001 /* Vesper/App/AppModel.swift */,
+000000000000000000000003 /* Vesper/App/PersistenceModels.swift */,
+000000000000000000000005 /* Vesper/App/RootView.swift */,
+000000000000000000000007 /* Vesper/App/VesperApp.swift */,
+000000000000000000000009 /* Vesper/Features/Audit/AuditView.swift */,
+00000000000000000000000B /* Vesper/Features/Chat/ApprovalSheet.swift */,
+00000000000000000000000D /* Vesper/Features/Chat/CameraPicker.swift */,
+00000000000000000000000F /* Vesper/Features/Chat/ChatView.swift */,
+000000000000000000000011 /* Vesper/Features/Device/DeviceView.swift */,
+000000000000000000000013 /* Vesper/Features/Files/FileBrowserView.swift */,
+000000000000000000000015 /* Vesper/Features/Onboarding/OnboardingView.swift */,
+000000000000000000000017 /* Vesper/Features/Settings/SettingsView.swift */,
+000000000000000000000019 /* Vesper/Generated/application.pb.swift */,
+00000000000000000000001B /* Vesper/Generated/desktop.pb.swift */,
+00000000000000000000001D /* Vesper/Generated/flipper.pb.swift */,
+00000000000000000000001F /* Vesper/Generated/gpio.pb.swift */,
+000000000000000000000021 /* Vesper/Generated/gui.pb.swift */,
+000000000000000000000023 /* Vesper/Generated/property.pb.swift */,
+000000000000000000000025 /* Vesper/Generated/storage.pb.swift */,
+000000000000000000000027 /* Vesper/Generated/system.pb.swift */,
+000000000000000000000029 /* Vesper/Services/AuditStream.swift */,
+00000000000000000000002B /* Vesper/Services/CoreBluetoothTransport.swift */,
+00000000000000000000002D /* Vesper/Services/FlipperRPCService.swift */,
+00000000000000000000002F /* Vesper/Services/KeychainStore.swift */,
+000000000000000000000031 /* Vesper/Services/OpenRouterClient.swift */,); name = Vesper; sourceTree = "<group>"; };
+000000000000000000000042 /* VesperTests */ = {isa = PBXGroup; children = (000000000000000000000033,); name = VesperTests; sourceTree = "<group>"; };
+000000000000000000000043 /* VesperUITests */ = {isa = PBXGroup; children = (000000000000000000000035,); name = VesperUITests; sourceTree = "<group>"; };
+000000000000000000000041 /* Resources */ = {isa = PBXGroup; children = (000000000000000000000037, 000000000000000000000039,); name = Resources; sourceTree = "<group>"; };
+00000000000000000000003E /* Products */ = {isa = PBXGroup; children = (00000000000000000000003B, 00000000000000000000003C, 00000000000000000000003D,); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+00000000000000000000004E /* Vesper */ = {isa = PBXNativeTarget; buildConfigurationList = 000000000000000000000059; buildPhases = (000000000000000000000044, 00000000000000000000004A, 000000000000000000000047,); buildRules = (); dependencies = (); name = Vesper; packageProductDependencies = (000000000000000000000063, 000000000000000000000064,); productName = Vesper; productReference = 00000000000000000000003B; productType = "com.apple.product-type.application"; };
+00000000000000000000004F /* VesperTests */ = {isa = PBXNativeTarget; buildConfigurationList = 00000000000000000000005A; buildPhases = (000000000000000000000045, 00000000000000000000004B, 000000000000000000000048,); buildRules = (); dependencies = (00000000000000000000005F,); name = VesperTests; packageProductDependencies = (000000000000000000000063, 000000000000000000000064,); productName = VesperTests; productReference = 00000000000000000000003C; productType = "com.apple.product-type.bundle.unit-test"; };
+000000000000000000000050 /* VesperUITests */ = {isa = PBXNativeTarget; buildConfigurationList = 00000000000000000000005B; buildPhases = (000000000000000000000046, 00000000000000000000004C, 000000000000000000000049,); buildRules = (); dependencies = (000000000000000000000060,); name = VesperUITests; productName = VesperUITests; productReference = 00000000000000000000003D; productType = "com.apple.product-type.bundle.ui-testing"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+00000000000000000000004D /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2620; LastUpgradeCheck = 2620; TargetAttributes = {00000000000000000000004E = {CreatedOnToolsVersion = 26.2;}; 00000000000000000000004F = {CreatedOnToolsVersion = 26.2; TestTargetID = 00000000000000000000004E;}; 000000000000000000000050 = {CreatedOnToolsVersion = 26.2; TestTargetID = 00000000000000000000004E;};};}; buildConfigurationList = 00000000000000000000005C; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = 00000000000000000000003F; packageReferences = (000000000000000000000061, 000000000000000000000062,); productRefGroup = 00000000000000000000003E; projectDirPath = ""; projectRoot = ""; targets = (00000000000000000000004E, 00000000000000000000004F, 000000000000000000000050,); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+000000000000000000000047 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000038, 00000000000000000000003A,); runOnlyForDeploymentPostprocessing = 0; };
+000000000000000000000048 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+000000000000000000000049 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+000000000000000000000044 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000002 /* AppModel.swift in Sources */,
+000000000000000000000004 /* PersistenceModels.swift in Sources */,
+000000000000000000000006 /* RootView.swift in Sources */,
+000000000000000000000008 /* VesperApp.swift in Sources */,
+00000000000000000000000A /* AuditView.swift in Sources */,
+00000000000000000000000C /* ApprovalSheet.swift in Sources */,
+00000000000000000000000E /* CameraPicker.swift in Sources */,
+000000000000000000000010 /* ChatView.swift in Sources */,
+000000000000000000000012 /* DeviceView.swift in Sources */,
+000000000000000000000014 /* FileBrowserView.swift in Sources */,
+000000000000000000000016 /* OnboardingView.swift in Sources */,
+000000000000000000000018 /* SettingsView.swift in Sources */,
+00000000000000000000001A /* application.pb.swift in Sources */,
+00000000000000000000001C /* desktop.pb.swift in Sources */,
+00000000000000000000001E /* flipper.pb.swift in Sources */,
+000000000000000000000020 /* gpio.pb.swift in Sources */,
+000000000000000000000022 /* gui.pb.swift in Sources */,
+000000000000000000000024 /* property.pb.swift in Sources */,
+000000000000000000000026 /* storage.pb.swift in Sources */,
+000000000000000000000028 /* system.pb.swift in Sources */,
+00000000000000000000002A /* AuditStream.swift in Sources */,
+00000000000000000000002C /* CoreBluetoothTransport.swift in Sources */,
+00000000000000000000002E /* FlipperRPCService.swift in Sources */,
+000000000000000000000030 /* KeychainStore.swift in Sources */,
+000000000000000000000032 /* OpenRouterClient.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
+000000000000000000000045 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000034,); runOnlyForDeploymentPostprocessing = 0; };
+000000000000000000000046 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000036,); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+00000000000000000000005F = {isa = PBXTargetDependency; target = 00000000000000000000004E; targetProxy = 00000000000000000000005D; };
+000000000000000000000060 = {isa = PBXTargetDependency; target = 00000000000000000000004E; targetProxy = 00000000000000000000005E; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+000000000000000000000057 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; ONLY_ACTIVE_ARCH = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_VERSION = 6.0;}; name = Debug; };
+000000000000000000000058 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_VERSION = 6.0;}; name = Release; };
+000000000000000000000051 = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; ENABLE_TESTABILITY = YES; INFOPLIST_FILE = Vesper/Resources/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0.0; PRODUCT_BUNDLE_IDENTIFIER = com.vesper.flipper.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_STRICT_CONCURRENCY = complete; SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = 1;}; name = Debug; };
+000000000000000000000052 = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; INFOPLIST_FILE = Vesper/Resources/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0.0; PRODUCT_BUNDLE_IDENTIFIER = com.vesper.flipper.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_STRICT_CONCURRENCY = complete; SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = 1; VALIDATE_PRODUCT = YES;}; name = Release; };
+000000000000000000000053 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.vesper.flipper.ios.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SWIFT_VERSION = 6.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vesper.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Vesper";}; name = Debug; };
+000000000000000000000054 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.vesper.flipper.ios.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SWIFT_VERSION = 6.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vesper.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Vesper";}; name = Release; };
+000000000000000000000055 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.vesper.flipper.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SWIFT_VERSION = 6.0; TEST_TARGET_NAME = Vesper;}; name = Debug; };
+000000000000000000000056 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.vesper.flipper.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SWIFT_VERSION = 6.0; TEST_TARGET_NAME = Vesper;}; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+00000000000000000000005C = {isa = XCConfigurationList; buildConfigurations = (000000000000000000000057, 000000000000000000000058,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+000000000000000000000059 = {isa = XCConfigurationList; buildConfigurations = (000000000000000000000051, 000000000000000000000052,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+00000000000000000000005A = {isa = XCConfigurationList; buildConfigurations = (000000000000000000000053, 000000000000000000000054,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+00000000000000000000005B = {isa = XCConfigurationList; buildConfigurations = (000000000000000000000055, 000000000000000000000056,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+000000000000000000000061 /* XCLocalSwiftPackageReference "VesperCore" */ = {isa = XCLocalSwiftPackageReference; relativePath = VesperCore; };
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+000000000000000000000062 /* XCRemoteSwiftPackageReference "swift-protobuf" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/apple/swift-protobuf.git"; requirement = {kind = exactVersion; version = 1.32.0;}; };
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+000000000000000000000063 /* VesperCore */ = {isa = XCSwiftPackageProductDependency; package = 000000000000000000000061; productName = VesperCore; };
+000000000000000000000064 /* SwiftProtobuf */ = {isa = XCSwiftPackageProductDependency; package = 000000000000000000000062; productName = SwiftProtobuf; };
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 00000000000000000000004D /* Project object */;
+}
