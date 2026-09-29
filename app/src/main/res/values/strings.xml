@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Vesper</string>
-    <string name="app_description">AI-Driven Flipper Control</string>
+    <string name="app_name">Flippy</string>
+    <string name="app_description">AI-Driven Flipper Control — Flippy by DiMase Inc.</string>
 
     <!-- Navigation -->
     <string name="nav_chat">Chat</string>
@@ -18,7 +18,7 @@
     <string name="ble_error">Connection error: %s</string>
 
     <!-- Chat -->
-    <string name="chat_hint">Ask Vesper to control your Flipper…</string>
+    <string name="chat_hint">Ask Flippy to control your Flipper…</string>
     <string name="chat_send">Send</string>
     <string name="chat_thinking">Thinking…</string>
 
@@ -59,12 +59,12 @@
     <!-- Errors -->
     <string name="error_no_flipper">No Flipper device found</string>
     <string name="error_ble_disabled">Bluetooth is disabled</string>
-    <string name="error_api_key">OpenRouter API key not configured</string>
+    <string name="error_api_key">Flippy Gateway key not configured</string>
     <string name="error_command_failed">Command failed: %s</string>
 
     <!-- Widget -->
     <string name="widget_description">Quick-launch signals from your home screen</string>
-    <string name="widget_name">Vesper Signals</string>
+    <string name="widget_name">Flippy Signals</string>
     <string name="widget_signals_title">⚡ Signals</string>
     <string name="widget_refresh">Refresh</string>
     <string name="widget_signal_1">Signal 1</string>

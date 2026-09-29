@@ -39,6 +39,9 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.vesper.flipper.R
 import com.vesper.flipper.data.database.ChatSessionSummary
 import com.vesper.flipper.domain.model.*
 import com.vesper.flipper.ui.components.ApprovalDialog
@@ -412,42 +415,17 @@ private fun EmptyChat(onSuggestionClick: (String) -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Barrel ring icon — matches logo aesthetic
-            Box(
-                modifier = Modifier
-                    .size(72.dp)
-                    .clip(CircleShape)
-                    .background(VesperOrange.copy(alpha = 0.08f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(Color.Transparent)
-                        .then(
-                            Modifier.background(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(VesperOrange.copy(alpha = 0.15f), Color.Transparent)
-                                )
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "V",
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.Light,
-                        color = VesperOrange,
-                        fontFamily = FontFamily.Serif
-                    )
-                }
-            }
+            // Flippy dolphin logo (from the official brand artwork)
+            Image(
+                painter = painterResource(id = R.drawable.flippy_logo_full),
+                contentDescription = "Flippy logo",
+                modifier = Modifier.size(96.dp)
+            )
 
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                "VESPER",
+                "FLIPPY",
                 style = MaterialTheme.typography.labelLarge,
                 letterSpacing = 4.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)

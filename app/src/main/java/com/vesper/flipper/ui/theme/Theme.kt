@@ -14,13 +14,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 // ═══════════════════════════════════════════════════════════
-// VESPER BRAND — Classy Mythic Cyberpunk Bond
+// FLIPPY BRAND — Dolphin Ocean Blues (from the logo artwork)
 // ═══════════════════════════════════════════════════════════
 
-// Primary: Wine Red — the blood of the machine
-val VesperWine = Color(0xFF8B2038)           // True wine / claret red
-val VesperWineLight = Color(0xFFAD3B50)      // Lighter wine for highlights
-val VesperWineDark = Color(0xFF5E1625)        // Darker wine for pressed states
+// Primary: Ocean Blue — the dolphin's body
+val VesperWine = Color(0xFF1E96D2)           // Bright ocean blue (brand primary)
+val VesperWineLight = Color(0xFF4FB6E8)      // Lighter blue for highlights
+val VesperWineDark = Color(0xFF155F8C)        // Deep ocean for pressed states
 
 // Legacy alias — keeps existing references working
 val VesperOrange = VesperWine
@@ -30,17 +30,17 @@ val VesperOrangeDark = VesperWineDark
 val VesperSecondary = Color(0xFF1A1F2E)       // Gunmetal blue-black
 val VesperGunmetal = Color(0xFF2A3142)         // Lighter gunmetal
 
-// Accent: Champagne Gold — old money elegance
-val VesperAccent = Color(0xFFD4AF37)           // Champagne gold
-val VesperGold = Color(0xFFD4AF37)
-val VesperGoldMuted = Color(0xFF9E8530)        // Muted gold for secondary accents
+// Accent: Wave Cyan — the glowing curl in the logo
+val VesperAccent = Color(0xFF0CC4E0)           // Bright wave cyan
+val VesperGold = Color(0xFF0CC4E0)
+val VesperGoldMuted = Color(0xFF0E8CA8)        // Muted cyan for secondary accents
 
 // Surface Colors — deep noir palette
 val VesperSurface = Color(0xFF0E1118)
 val VesperSurfaceVariant = Color(0xFF161B28)
 val VesperBackground = Color(0xFF060810)
 val VesperBackgroundDeep = Color(0xFF030508)
-val VesperBackgroundGlow = Color(0xFF0D0A14)   // Very subtle wine tint
+val VesperBackgroundGlow = Color(0xFF0A1018)   // Very subtle ocean tint
 
 val VesperBackdropBrush = Brush.verticalGradient(
     colors = listOf(
@@ -51,10 +51,10 @@ val VesperBackdropBrush = Brush.verticalGradient(
     )
 )
 
-// Risk Colors — refined
+// Risk Colors — semantic, kept distinct from brand palette
 val RiskLow = Color(0xFF4CAF7D)
-val RiskMedium = Color(0xFFD4AF37)   // Gold for medium — on brand
-val RiskHigh = Color(0xFFCF4455)     // Wine-adjacent red
+val RiskMedium = Color(0xFFD4AF37)   // Amber for medium risk
+val RiskHigh = Color(0xFFCF4455)     // Alert red
 val RiskBlocked = Color(0xFF6B7394)
 
 // Diff Colors
@@ -72,15 +72,15 @@ val ChatToolAccent = VesperGold              // Gold for tool highlights
 
 private val DarkColorScheme = darkColorScheme(
     primary = VesperWine,
-    onPrimary = Color(0xFFF5E6EC),
+    onPrimary = Color(0xFFF2F8FD),
     primaryContainer = VesperWineDark,
-    onPrimaryContainer = Color(0xFFF8E0EC),
+    onPrimaryContainer = Color(0xFFD6ECFA),
     secondary = VesperSecondary,
     onSecondary = Color(0xFFCAD0E0),
     secondaryContainer = VesperSurfaceVariant,
     onSecondaryContainer = Color(0xFFD5DEF0),
     tertiary = VesperGold,
-    onTertiary = Color(0xFF1A1508),
+    onTertiary = Color(0xFF06222B),
     background = VesperBackground,
     onBackground = Color(0xFFE6E8F0),
     surface = VesperSurface,
@@ -96,22 +96,22 @@ private val DarkColorScheme = darkColorScheme(
 private val LightColorScheme = lightColorScheme(
     primary = VesperWine,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFF5D6E4),
-    onPrimaryContainer = Color(0xFF4D1830),
+    primaryContainer = Color(0xFFD3EAF8),
+    onPrimaryContainer = Color(0xFF0C3A5A),
     secondary = VesperSecondary,
     onSecondary = Color.White,
     secondaryContainer = Color(0xFFDCE0F0),
     onSecondaryContainer = Color(0xFF1A1F2E),
     tertiary = VesperGold,
-    onTertiary = Color(0xFF1A1508),
-    background = Color(0xFFF4F2F5),
+    onTertiary = Color(0xFF06222B),
+    background = Color(0xFFF2F5F8),
     onBackground = Color(0xFF121520),
     surface = Color.White,
     onSurface = Color(0xFF111420),
-    surfaceVariant = Color(0xFFEBE8EE),
-    onSurfaceVariant = Color(0xFF504862),
-    outline = Color(0xFF706680),
-    outlineVariant = Color(0xFFBEB4C8),
+    surfaceVariant = Color(0xFFE8EEF4),
+    onSurfaceVariant = Color(0xFF48586A),
+    outline = Color(0xFF68788A),
+    outlineVariant = Color(0xFFB4C4D4),
     error = RiskHigh,
     onError = Color.White
 )

@@ -82,8 +82,7 @@ class OpenRouterClient @Inject constructor(
             )
         }
 
-        val apiKey = settingsStore.apiKey.first()
-            ?: return@withContext ChatCompletionResult.Error("OpenRouter API key not configured")
+        val apiKey = settingsStore.apiKey.first() ?: "flippy-local"
 
         // Validate API key format
         if (!InputValidator.isValidApiKey(apiKey)) {
@@ -1387,9 +1386,9 @@ class OpenRouterClient @Inject constructor(
 
     companion object {
         private const val TAG = "OpenRouterClient"
-        private const val OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+        private const val OPENROUTER_API_URL = "https://flippy.dimaseinc.org/v1/chat/completions"
         private const val DNS_RESOLUTION_ERROR_MESSAGE =
-            "Cannot resolve openrouter.ai (DNS/network issue). Verify internet access, disable broken Private DNS/VPN, then retry."
+            "Cannot reach Flippy Gateway (flippy.dimaseinc.org). Check internet connection, then retry."
         private const val EXPECTED_TOOL_ARGUMENTS_FORMAT =
             """{"action":"<action>","args":{...},"justification":"...","expected_effect":"..."}"""
         private const val MAX_TOOL_MODEL_CANDIDATES = 10

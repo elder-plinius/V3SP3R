@@ -1,0 +1,39 @@
+## Template for `local.properties`.
+##
+## Copy this file to `local.properties` in the same directory and fill in your
+## own values. `local.properties` is machine-specific and is git-ignored — never
+## commit it.
+##
+##   cp local.properties.example local.properties
+##
+## Android Studio creates `local.properties` automatically when you open the
+## project, so you usually only need to do this by hand for a command-line build.
+
+## ---------------------------------------------------------------------------
+## Android SDK location
+## ---------------------------------------------------------------------------
+## If this is unset, Gradle falls back to the ANDROID_HOME / ANDROID_SDK_ROOT
+## environment variable, so CI runners do not need this file at all.
+##
+## macOS:   /Users/<you>/Library/Android/sdk
+## Linux:   /home/<you>/Android/Sdk
+## Windows: C:\\Users\\<you>\\AppData\\Local\\Android\\Sdk
+sdk.dir=/path/to/Android/sdk
+
+## ---------------------------------------------------------------------------
+## Optional: release signing
+## ---------------------------------------------------------------------------
+## When RELEASE_STORE_FILE is set, the `release` build type is signed with this
+## keystore. If it is left unset, `release` builds are simply left unsigned.
+##
+## Keep the keystore plus these values out of version control. `*.jks`,
+## `*.keystore` and `keystore/` are already git-ignored.
+##
+## Generate a keystore with:
+##   keytool -genkeypair -v -keystore keystore/vesper-release.jks \
+##     -alias vesper -keyalg RSA -keysize 2048 -validity 10000
+#
+#RELEASE_STORE_FILE=../keystore/vesper-release.jks
+#RELEASE_STORE_PASSWORD=
+#RELEASE_KEY_ALIAS=vesper
+#RELEASE_KEY_PASSWORD=

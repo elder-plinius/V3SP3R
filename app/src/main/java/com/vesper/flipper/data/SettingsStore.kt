@@ -301,8 +301,8 @@ class SettingsStore @Inject constructor(
     }
 
     companion object {
-        // Default to the largest Hermes 4 model on OpenRouter.
-        const val DEFAULT_MODEL = "nousresearch/hermes-4-405b"
+        // Flippy routes through the DiMase 3-tier gateway (Groq -> LiteLLM -> local Ollama)
+        const val DEFAULT_MODEL = "openai/gpt-oss-120b"
         // Shimmer: soft, warm female — default TTS voice (OpenAI via OpenRouter)
         const val DEFAULT_TTS_VOICE = "shimmer"
         const val DEFAULT_AI_MAX_ITERATIONS = 10
@@ -311,18 +311,10 @@ class SettingsStore @Inject constructor(
 
         // Used when fetching live catalog fails (offline/rate-limited).
         val FALLBACK_MODELS = listOf(
-            ModelInfo("nousresearch/hermes-4-405b", "Hermes 4 405B", "Largest Hermes 4"),
-            ModelInfo("anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5", "Latest Anthropic"),
-            ModelInfo("openai/gpt-oss-120b", "GPT-OSS 120B", "Latest OpenAI"),
-            ModelInfo("google/gemini-2.5-flash-image-preview", "Gemini 2.5 Flash Image Preview", "Latest Google"),
-            ModelInfo("meta-llama/llama-3.3-8b-instruct", "Llama 3.3 8B Instruct", "Latest Meta"),
-            ModelInfo("mistralai/devstral-small", "Devstral Small", "Latest Mistral"),
-            ModelInfo("x-ai/grok-4-fast", "Grok 4 Fast", "Latest xAI"),
-            ModelInfo("qwen/qwen3-coder", "Qwen3 Coder", "Latest Qwen"),
-            ModelInfo("deepseek/deepseek-r1-0528", "DeepSeek R1 0528", "Latest DeepSeek"),
-            ModelInfo("cohere/command-a", "Command A", "Latest Cohere"),
-            ModelInfo("moonshotai/kimi-k2", "Kimi K2", "Latest Moonshot"),
-            ModelInfo("z-ai/glm-4.5", "GLM 4.5", "Latest Z.ai")
+            ModelInfo("openai/gpt-oss-120b", "GPT-OSS 120B", "Primary via Flippy Gateway"),
+            ModelInfo("openai/gpt-oss-20b", "GPT-OSS 20B", "Fast tier via Flippy Gateway"),
+            ModelInfo("gemini/gemini-2.5-flash", "Gemini 2.5 Flash", "Google via Flippy Gateway"),
+            ModelInfo("llama3:latest", "Llama 3 (Local)", "Offline fallback via Ollama")
         )
 
         fun getModelDisplayName(

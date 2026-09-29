@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Flippy paper: soft cool-white gradient (matches logo artwork) -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="radial"
+                android:gradientRadius="160dp"
+                android:centerX="0.5"
+                android:centerY="0.42"
+                android:startColor="#FFFDFEFF"
+                android:endColor="#FFE4EDF8" />
+        </shape>
+    </item>
+</layer-list>

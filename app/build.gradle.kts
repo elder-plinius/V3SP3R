@@ -9,11 +9,17 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Load signing properties from local.properties (not checked into git)
+// Load signing properties: CI provides keystore.properties (generated in workflow),
+// local builds use local.properties (not checked into git).
 val localProps = Properties().apply {
-    val localPropsFile = rootProject.file("local.properties")
-    if (localPropsFile.exists()) {
-        localPropsFile.inputStream().use { load(it) }
+    val keystorePropsFile = rootProject.file("keystore.properties")
+    if (keystorePropsFile.exists()) {
+        keystorePropsFile.inputStream().use { load(it) }
+    } else {
+        val localPropsFile = rootProject.file("local.properties")
+        if (localPropsFile.exists()) {
+            localPropsFile.inputStream().use { load(it) }
+        }
     }
 }
 
@@ -22,11 +28,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.vesper.flipper"
+        applicationId = "org.dimaseinc.flippy"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 5
+        versionName = "1.1.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
