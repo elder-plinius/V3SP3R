@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.vesper.flipper.ble.ConnectionDiagnosticsReportTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-03-06T21:31:23.840Z" hostname="abraxass-MacBook-Air.local" time="0.004">
-  <properties/>
-  <testcase name="report summary indicates warning state without failures" classname="com.vesper.flipper.ble.ConnectionDiagnosticsReportTest" time="0.002"/>
-  <testcase name="report summary indicates failures when any check fails" classname="com.vesper.flipper.ble.ConnectionDiagnosticsReportTest" time="0.002"/>
-  <testcase name="idle report indicates no diagnostics" classname="com.vesper.flipper.ble.ConnectionDiagnosticsReportTest" time="0.0"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>
