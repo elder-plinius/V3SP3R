@@ -6,6 +6,10 @@
     <color name="vesper_secondary">#1A1F2E</color>
     <color name="vesper_accent">#D4AF37</color>
 
+    <!-- Launch window. Matches the canvas token so the starting window
+         never flashes a lighter surface. -->
+    <color name="vesper_window_background">#08070C</color>
+
     <!-- Surface Colors -->
     <color name="vesper_surface">#0E1118</color>
     <color name="vesper_surface_variant">#161B28</color>

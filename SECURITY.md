@@ -38,8 +38,8 @@ Every AI-initiated action is classified before execution:
 |-------|----------|---------|
 | **Low** | Auto-execute | `list_directory`, `read_file`, `get_device_info` |
 | **Medium** | Show diff, require approval | `write_file`, `execute_cli`, `ir_transmit` |
-| **High** | Double-tap confirmation | `delete`, `subghz_transmit`, `badusb_execute` |
-| **Blocked** | Requires explicit unlock | System paths, firmware areas |
+| **High** | Hold-to-confirm with a visible countdown | `delete`, `subghz_transmit`, `badusb_execute` |
+| **Blocked** | Requires explicit unlock in Settings | `/int`, `/ext/update`, key material |
 
 ### Input Validation
 
@@ -50,10 +50,23 @@ Every AI-initiated action is classified before execution:
 
 ### Data Protection
 
-- API keys are stored in Android's EncryptedSharedPreferences
-- Chat history is stored locally in an encrypted Room database
-- No telemetry or analytics are collected
-- No data is sent to third parties (except your chosen LLM provider via OpenRouter)
+- The OpenRouter API key is encrypted with an AES-256/GCM key held by the
+  Android Keystore and stored as a versioned envelope. A one-time migration
+  encrypts keys saved by older versions. If the Keystore is unavailable (for
+  example on a locked device with an invalidated key) the app degrades to
+  plaintext storage rather than losing the configuration.
+- The settings file that holds the key is excluded from cloud backup and device
+  transfer.
+- Chat history is stored in the app's private Room database. It is protected by
+  Android's per-app sandbox and full-disk/file-based encryption, but it is not
+  additionally encrypted by Vesper.
+- Device- and network-sourced text is delimited as untrusted data before it is
+  sent to a model, so file contents cannot silently become instructions.
+- The local file server requires a per-session token, caps request size, limits
+  concurrent connections, and times out stalled sockets.
+- No telemetry or analytics are collected.
+- No data is sent to third parties except your selected model provider (through
+  OpenRouter) and, if you enable them, the TTS and smart-glasses services.
 
 ### What We Consider In-Scope
 

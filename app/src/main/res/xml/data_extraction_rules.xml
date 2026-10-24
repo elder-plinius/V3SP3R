@@ -2,10 +2,20 @@
 <data-extraction-rules>
     <cloud-backup>
         <include domain="sharedpref" path="."/>
-        <exclude domain="sharedpref" path="api_key_prefs.xml"/>
+
+        <!-- Settings and API key material stay on this device. -->
+        <exclude domain="file" path="datastore/vesper_settings.preferences_pb"/>
+        <exclude domain="file" path="datastore/"/>
+        <exclude domain="sharedpref" path="vesper_secure_prefs.xml"/>
     </cloud-backup>
+
     <device-transfer>
         <include domain="sharedpref" path="."/>
-        <exclude domain="sharedpref" path="api_key_prefs.xml"/>
+
+        <!-- A new device cannot use the old Keystore key, so the encrypted
+             key file and the settings DataStore are excluded from transfer. -->
+        <exclude domain="file" path="datastore/vesper_settings.preferences_pb"/>
+        <exclude domain="file" path="datastore/"/>
+        <exclude domain="sharedpref" path="vesper_secure_prefs.xml"/>
     </device-transfer>
 </data-extraction-rules>

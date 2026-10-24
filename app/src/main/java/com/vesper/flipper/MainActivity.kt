@@ -1,232 +1,169 @@
 package com.vesper.flipper
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.navigation.NavDestination.Companion.hierarchy
-import androidx.navigation.NavGraph.Companion.findStartDestination
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.currentBackStackEntryAsState
-import androidx.navigation.compose.rememberNavController
-import com.vesper.flipper.ble.FlipperBleService
+import androidx.core.view.WindowInsetsControllerCompat
 import com.vesper.flipper.data.SettingsStore
-import com.vesper.flipper.ui.screen.*
-import com.vesper.flipper.ui.theme.VesperBackdropBrush
+import com.vesper.flipper.ui.navigation.VesperApp
+import com.vesper.flipper.ui.navigation.VesperDestination
+import com.vesper.flipper.ui.onboarding.OnboardingScreen
+import com.vesper.flipper.ui.onboarding.OnboardingState
 import com.vesper.flipper.ui.theme.VesperTheme
+import com.vesper.flipper.ui.theme.vesperBackdrop
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.flow.first
 
+/**
+ * Single activity. Edge-to-edge, no permission dialog fired before the
+ * onboarding screen has explained what it is for.
+ */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var settingsStore: SettingsStore
 
-    private val requiredPermissions = buildList {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            add(Manifest.permission.BLUETOOTH_SCAN)
-            add(Manifest.permission.BLUETOOTH_CONNECT)
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        } else {
-            add(Manifest.permission.BLUETOOTH)
-            add(Manifest.permission.BLUETOOTH_ADMIN)
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-    }.toTypedArray()
+    private var blePermissionGranted by mutableStateOf(false)
+    private var pendingRoute by mutableStateOf<String?>(null)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val allGranted = permissions.values.all { it }
-        if (allGranted) {
-            startBleService()
-        }
+    ) {
+        blePermissionGranted = hasBlePermissions()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT)
+        )
         super.onCreate(savedInstanceState)
 
-        checkAndRequestPermissions()
+        blePermissionGranted = hasBlePermissions()
+        pendingRoute = routeFromIntent(intent)?.takeIf { OnboardingState.isCompleted(this) }
 
         setContent {
             val darkMode by settingsStore.darkMode.collectAsState(initial = true)
-            VesperTheme(darkTheme = darkMode) {
-                VesperApp()
+            var completed by remember { mutableStateOf(OnboardingState.isCompleted(this)) }
+            var startRoute by remember {
+                mutableStateOf(pendingRoute ?: VesperDestination.Chat.route)
             }
-        }
-    }
 
-    private fun checkAndRequestPermissions() {
-        val missingPermissions = requiredPermissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
+            // Resolve the existing key once: returning users must not be sent
+            // through onboarding again after an update.
+            val keyState by produceState<Pair<Boolean, String?>>(initialValue = false to null) {
+                val key = runCatching { settingsStore.apiKey.first() }.getOrNull()
+                value = true to key
+            }
+            val keyResolved = keyState.first
+            val savedKey = keyState.second
 
-        if (missingPermissions.isEmpty()) {
-            startBleService()
-        } else {
-            permissionLauncher.launch(missingPermissions.toTypedArray())
-        }
-    }
-
-    private fun startBleService() {
-        FlipperBleService.startService(this)
-    }
-}
-
-sealed class Screen(
-    val route: String,
-    val title: String,
-    val selectedIcon: ImageVector,
-    val unselectedIcon: ImageVector
-) {
-    object Chat : Screen("chat", "Chat", Icons.Filled.Chat, Icons.Outlined.Chat)
-    object Oracle : Screen("oracle", "Oracle", Icons.Filled.Visibility, Icons.Outlined.Visibility)
-    object Arsenal : Screen("arsenal", "Arsenal", Icons.Filled.Sensors, Icons.Outlined.Sensors)
-    object Alchemy : Screen("alchemy", "Alchemy", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome)
-    object OpsCenter : Screen("ops_center", "Ops", Icons.Filled.BluetoothSearching, Icons.Outlined.BluetoothSearching)
-    object PayloadLab : Screen("payload_lab", "Payloads", Icons.Filled.Code, Icons.Outlined.Code)
-    object FapHub : Screen("faphub", "FapHub", Icons.Filled.Apps, Icons.Outlined.Apps)
-    object Files : Screen("files", "Files", Icons.Filled.Folder, Icons.Outlined.Folder)
-    object Audit : Screen("audit", "Audit", Icons.Filled.History, Icons.Outlined.History)
-    object Device : Screen("device", "Device", Icons.Filled.Bluetooth, Icons.Outlined.Bluetooth)
-    object Settings : Screen("settings", "Settings", Icons.Filled.Settings, Icons.Outlined.Settings)
-}
-
-val screens = listOf(
-    Screen.Chat,
-    Screen.Alchemy,
-    Screen.FapHub,
-    Screen.Device,
-    Screen.Settings
-)
-
-@Composable
-fun VesperApp() {
-    val navController = rememberNavController()
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(VesperBackdropBrush)
-    ) {
-        Scaffold(
-            containerColor = Color.Transparent,
-            bottomBar = {
-                NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                    tonalElevation = 0.dp
-                ) {
-                    val navBackStackEntry by navController.currentBackStackEntryAsState()
-                    val currentDestination = navBackStackEntry?.destination
-
-                    // Map sub-screens to their parent bottom-nav tab
-                    val subScreenParents = mapOf(
-                        Screen.Audit.route to Screen.Chat.route,
-                        Screen.Files.route to Screen.Device.route
-                    )
-                    val currentRoute = currentDestination?.route
-                    val effectiveRoute = subScreenParents[currentRoute] ?: currentRoute
-
-                    screens.forEach { screen ->
-                        val selected = if (screen.route == effectiveRoute) {
-                            true
-                        } else {
-                            currentDestination?.hierarchy?.any { it.route == screen.route } == true
-                        }
-
-                        NavigationBarItem(
-                            icon = {
-                                Icon(
-                                    if (selected) screen.selectedIcon else screen.unselectedIcon,
-                                    contentDescription = screen.title
-                                )
-                            },
-                            label = { Text(screen.title) },
-                            selected = selected,
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                            ),
-                            onClick = {
-                                val activeRoute = navController.currentBackStackEntry?.destination?.route
-                                // If already on this tab, do nothing
-                                if (activeRoute == screen.route) return@NavigationBarItem
-                                navController.navigate(screen.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    // Only restore state when switching between bottom-nav tabs,
-                                    // not when returning from sub-screens (Files, Audit)
-                                    restoreState = activeRoute in screens.map { it.route }
-                                }
-                            }
-                        )
+            VesperTheme(darkTheme = darkMode) {
+                LaunchedEffect(darkMode) {
+                    val controller = WindowInsetsControllerCompat(window, window.decorView)
+                    controller.isAppearanceLightStatusBars = !darkMode
+                    controller.isAppearanceLightNavigationBars = !darkMode
+                }
+                LaunchedEffect(keyResolved, savedKey) {
+                    if (keyResolved && !savedKey.isNullOrBlank() && !completed) {
+                        OnboardingState.markCompleted(this@MainActivity)
+                        completed = true
                     }
                 }
-            }
-        ) { innerPadding ->
-            NavHost(
-                navController = navController,
-                startDestination = Screen.Chat.route,
-                modifier = Modifier.padding(innerPadding)
-            ) {
-                composable(Screen.Chat.route) {
-                    ChatScreen(
-                        onNavigateToAudit = {
-                            navController.navigate(Screen.Audit.route)
+
+                val showOnboarding = keyResolved && !completed && savedKey.isNullOrBlank()
+                if (!keyResolved && !completed) {
+                    // A few frames while the key is read: show the canvas, not
+                    // a flash of the chat screen.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(vesperBackdrop())
+                    )
+                } else if (showOnboarding) {
+                    OnboardingScreen(
+                        blePermissionGranted = blePermissionGranted,
+                        onRequestBlePermissions = ::requestBlePermissions,
+                        onFinish = { openSettings ->
+                            OnboardingState.markCompleted(this@MainActivity)
+                            completed = true
+                            startRoute = if (openSettings) {
+                                VesperDestination.Settings.route
+                            } else {
+                                VesperDestination.Chat.route
+                            }
                         }
                     )
-                }
-                composable(Screen.Alchemy.route) {
-                    AlchemyLabScreen()
-                }
-                composable(Screen.OpsCenter.route) {
-                    OpsCenterScreen()
-                }
-                composable(Screen.FapHub.route) {
-                    FapHubScreen()
-                }
-                composable(Screen.Files.route) {
-                    FileBrowserScreen()
-                }
-                composable(Screen.Audit.route) {
-                    AuditScreen()
-                }
-                composable(Screen.Device.route) {
-                    DeviceScreen(
-                        onNavigateToFiles = {
-                            navController.navigate(Screen.Files.route)
-                        }
+                } else {
+                    VesperApp(
+                        blePermissionGranted = blePermissionGranted,
+                        onRequestBlePermissions = ::requestBlePermissions,
+                        startRoute = startRoute,
+                        routeRequest = pendingRoute,
+                        onRouteRequestHandled = { pendingRoute = null }
                     )
-                }
-                composable(Screen.Settings.route) {
-                    SettingsScreen()
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        blePermissionGranted = hasBlePermissions()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        routeFromIntent(intent)?.let { pendingRoute = it }
+    }
+
+    /** Maps vesper://open/{route} to a destination route. */
+    private fun routeFromIntent(intent: Intent?): String? {
+        val data = intent?.data ?: return null
+        if (data.scheme != "vesper") return null
+        return VesperDestination.byRoute(data.lastPathSegment)?.route
+    }
+
+    private fun requestBlePermissions() {
+        permissionLauncher.launch(blePermissions())
+    }
+
+    private fun blePermissions(): Array<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT
+        )
+    } else {
+        arrayOf(
+            Manifest.permission.BLUETOOTH,
+            Manifest.permission.BLUETOOTH_ADMIN,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+    }
+
+    private fun hasBlePermissions(): Boolean = blePermissions().all { permission ->
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
     }
 }

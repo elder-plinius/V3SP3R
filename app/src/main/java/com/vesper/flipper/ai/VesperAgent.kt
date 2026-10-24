@@ -8,13 +8,19 @@ import com.vesper.flipper.domain.executor.CommandExecutor
 import com.vesper.flipper.domain.model.*
 import com.vesper.flipper.domain.model.ToolResult as ChatToolResult
 import com.vesper.flipper.domain.service.AuditService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -62,6 +68,20 @@ class VesperAgent @Inject constructor(
 
     private val persistenceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val persistenceMutex = Mutex()
+
+    /**
+     * Serialises conversation turns.
+     *
+     * Without this, a double-tap on "send" or a retry fired while the previous
+     * tool loop is still running would interleave tool calls and corrupt the
+     * assistant/tool message pairing the providers require. Turns queue here
+     * instead of racing.
+     */
+    private val agentTurnMutex = Mutex()
+
+    /** Job running the current turn, so the Stop button can cancel it. */
+    @Volatile
+    private var currentTurnJob: Job? = null
     private val persistenceJson = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -93,6 +113,13 @@ class VesperAgent @Inject constructor(
     suspend fun sendMessage(
         userMessage: String,
         imageAttachments: List<ImageAttachment>? = null
+    ): ConversationState = runTurn {
+        sendMessageLocked(userMessage, imageAttachments)
+    }
+
+    private suspend fun sendMessageLocked(
+        userMessage: String,
+        imageAttachments: List<ImageAttachment>?
     ): ConversationState {
         val messages = _conversationState.value.messages.toMutableList()
 
@@ -136,7 +163,11 @@ class VesperAgent @Inject constructor(
      * earlier successful tool exchanges are preserved to avoid re-triggering
      * side-effecting commands on the Flipper.
      */
-    suspend fun retryLastMessage(): ConversationState {
+    suspend fun retryLastMessage(): ConversationState = runTurn {
+        retryLastMessageLocked()
+    }
+
+    private suspend fun retryLastMessageLocked(): ConversationState {
         val current = _conversationState.value
         if (current.isLoading) return current
 
@@ -157,10 +188,17 @@ class VesperAgent @Inject constructor(
             }
         }
 
+        // A cancelled turn leaves the user's message unanswered with no error
+        // set (markTurnInterrupted clears it). Treat that transcript as
+        // resubmittable instead of silently no-oping the Retry button.
+        val pendingUserTurn = messages.lastOrNull()?.role == MessageRole.USER
+
         // Nothing to retry if we'd keep everything or the list is empty
         if (cutIndex >= messages.size || cutIndex == 0) {
-            if (current.error != null) {
-                // Re-submit current messages as-is (e.g. API error, no assistant msg added)
+            if (current.error != null || pendingUserTurn) {
+                // Re-submit current messages as-is: either the previous attempt
+                // failed (error set), or the turn was cancelled before the model
+                // replied. Both need the same resend.
             } else {
                 return current
             }
@@ -200,7 +238,68 @@ class VesperAgent @Inject constructor(
     /**
      * Continue after tool approval/rejection
      */
-    suspend fun continueAfterApproval(approvalId: String, approved: Boolean): ConversationState {
+    suspend fun continueAfterApproval(approvalId: String, approved: Boolean): ConversationState =
+        runTurn {
+            continueAfterApprovalLocked(approvalId, approved)
+        }
+
+    /**
+     * Cancel the in-flight turn (chat "Stop" button).
+     *
+     * Safe to call when idle. Cancels the running job, clears the loading /
+     * progress / approval state immediately and leaves the transcript at a
+     * boundary [retryLastMessage] can resume from.
+     */
+    suspend fun cancelCurrentTurn() {
+        val job = currentTurnJob
+        currentTurnJob = null
+        job?.cancel(CancellationException("Turn cancelled by user"))
+        markTurnInterrupted()
+    }
+
+    /**
+     * Runs [block] as a single serialised turn, tracking its Job for
+     * [cancelCurrentTurn] and guaranteeing a cancelled turn cannot leave the UI
+     * stuck on "loading" — the reset happens in a `finally`.
+     */
+    private suspend fun runTurn(block: suspend () -> ConversationState): ConversationState =
+        agentTurnMutex.withLock {
+            // A dedicated child Job scopes cancellation to this turn: pressing
+            // Stop must not tear down the caller's viewModelScope.
+            val turnJob = Job(currentCoroutineContext()[Job])
+            currentTurnJob = turnJob
+            try {
+                withContext(turnJob) { block() }
+            } catch (e: CancellationException) {
+                markTurnInterrupted()
+                if (turnJob.isCancelled) {
+                    // User pressed Stop: return the reset state instead of
+                    // throwing into the UI layer.
+                    return@withLock _conversationState.value
+                }
+                throw e
+            } finally {
+                if (currentTurnJob === turnJob) currentTurnJob = null
+                if (turnJob.isCancelled || !currentCoroutineContext().isActive) {
+                    markTurnInterrupted()
+                }
+            }
+        }
+
+    /** Reset the transient turn state without touching the message history. */
+    private fun markTurnInterrupted() {
+        val current = _conversationState.value
+        if (!current.isLoading && current.progress == null && current.pendingApproval == null) {
+            return
+        }
+        _conversationState.value = current.copy(
+            isLoading = false,
+            progress = null,
+            pendingApproval = null
+        )
+    }
+
+    private suspend fun continueAfterApprovalLocked(approvalId: String, approved: Boolean): ConversationState {
         val stateBeforeDecision = _conversationState.value
         val effectiveApprovalId = stateBeforeDecision.pendingApproval?.id ?: approvalId
 
@@ -280,11 +379,17 @@ class VesperAgent @Inject constructor(
     }
 
     private suspend fun processAIResponse(messages: MutableList<ChatMessage>): ConversationState {
+        currentCoroutineContext().ensureActive()
+
         var currentMessages = messages
         var iterations = 0
-        val maxIterations = runCatching {
+        val maxIterations = try {
             settingsStore.aiMaxIterations.first()
-        }.getOrDefault(SettingsStore.DEFAULT_AI_MAX_ITERATIONS)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            SettingsStore.DEFAULT_AI_MAX_ITERATIONS
+        }
 
         // Pre-process image attachments: create a separate copy of messages for the
         // API where images are replaced with text descriptions. The original messages
@@ -316,6 +421,9 @@ class VesperAgent @Inject constructor(
         }
 
         while (iterations < maxIterations) {
+            // Cancellation (user left the screen, new session started) must stop
+            // the loop before another model call or side effect.
+            currentCoroutineContext().ensureActive()
             iterations++
 
             _conversationState.value = _conversationState.value.copy(
@@ -413,6 +521,8 @@ class VesperAgent @Inject constructor(
                     val toolResults = mutableListOf<ChatToolResult>()
 
                     for (toolCall in result.toolCalls) {
+                        currentCoroutineContext().ensureActive()
+
                         if (toolCall.name != "execute_command") {
                             auditService.log(
                                 AuditEntry(
@@ -509,10 +619,12 @@ class VesperAgent @Inject constructor(
                                 )
                                 val description = callback.capturePhoto(photoPrompt, 15_000L)
                                 if (description != null) {
+                                    // Camera text is device-sourced; clamp it like any other tool payload.
+                                    val safeDescription = ToolOutput.truncate(description)
                                     toolResults.add(
                                         ChatToolResult(
                                             toolCallId = toolCall.id,
-                                            content = """{"success": true, "data": {"description": ${Json.encodeToString(description)}}}""",
+                                            content = """{"success": true, "data": {"description": ${Json.encodeToString(safeDescription)}}}""",
                                             success = true
                                         )
                                     )
@@ -541,6 +653,8 @@ class VesperAgent @Inject constructor(
                             continue
                         }
 
+                        // Never start a side-effecting command once the turn is cancelled.
+                        currentCoroutineContext().ensureActive()
                         val commandResult = commandExecutor.execute(command, currentSessionId)
 
                         if (commandResult.requiresConfirmation && commandResult.pendingApprovalId != null) {

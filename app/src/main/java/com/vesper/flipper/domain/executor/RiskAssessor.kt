@@ -27,16 +27,38 @@ class RiskAssessor @Inject constructor(
     fun assess(command: ExecuteCommand): RiskAssessment {
         val paths = extractPaths(command)
 
-        // Check for blocked paths first
-        val blockedPath = paths.find { ProtectedPaths.isProtected(it) }
-        if (blockedPath != null && !isUnlockedInSettings(blockedPath)) {
-            return RiskAssessment(
-                level = RiskLevel.BLOCKED,
+        // Reject path syntax that would be resolved differently by the Flipper
+        // firmware than by this classifier.
+        val invalidPath = paths.firstOrNull { it.contains("..") || it.contains('\u0000') }
+        if (invalidPath != null) {
+            return blocked(
+                paths = paths,
+                reason = "Invalid path rejected",
+                blockedReason = "Path traversal segments are never executed"
+            )
+        }
+
+        // Protected paths win over every action classification: /int, /ext/update,
+        // keys and firmware files are BLOCKED until the user unlocks them in Settings.
+        val lockedPath = paths.firstOrNull {
+            ProtectedPaths.isProtected(it) && !isUnlockedInSettings(it)
+        }
+        if (lockedPath != null) {
+            return blocked(
+                paths = paths,
                 reason = "Protected path",
+                blockedReason = ProtectedPaths.protectedReason(lockedPath)
+            )
+        }
+
+        // Installing/replacing executables under /ext/apps is never auto-approved.
+        if (writeTargets(command).any { ProtectedPaths.isExecutableArea(it) }) {
+            return RiskAssessment(
+                level = RiskLevel.HIGH,
+                reason = "Modifying installed applications",
                 affectedPaths = paths,
                 requiresDiff = false,
-                requiresConfirmation = false,
-                blockedReason = getBlockedReason(blockedPath)
+                requiresConfirmation = true
             )
         }
 
@@ -378,31 +400,54 @@ class RiskAssessor @Inject constructor(
      * Extract all paths affected by a command
      */
     private fun extractPaths(command: ExecuteCommand): List<String> {
-        val paths = mutableListOf<String>()
-        command.args.path?.let { paths.add(it) }
-        command.args.destinationPath?.let { paths.add(it) }
+        val paths = linkedSetOf<String>()
+        command.args.path?.takeIf { it.isNotBlank() }?.let(paths::add)
+        command.args.destinationPath?.takeIf { it.isNotBlank() }?.let(paths::add)
+
         if (command.action == CommandAction.EXECUTE_CLI) {
             val cliCommand = command.args.command ?: command.args.content.orEmpty()
             cliCommand.split(Regex("\\s+"))
+                .asSequence()
+                .map { it.trim('"', '\'', ',') }
                 .filter { it.startsWith("/") }
-                .forEach { paths.add(it) }
+                .forEach(paths::add)
         }
-        return paths
+        return paths.toList()
     }
+
+    /**
+     * Paths whose *contents* are replaced by the command. Used for the
+     * executable-area floor; read-only actions intentionally return nothing.
+     */
+    private fun writeTargets(command: ExecuteCommand): List<String> = when (command.action) {
+        CommandAction.WRITE_FILE,
+        CommandAction.CREATE_DIRECTORY,
+        CommandAction.PUSH_ARTIFACT,
+        CommandAction.DOWNLOAD_RESOURCE -> listOfNotNull(command.args.path)
+
+        CommandAction.COPY,
+        CommandAction.MOVE,
+        CommandAction.RENAME -> listOfNotNull(command.args.destinationPath, command.args.path)
+
+        else -> emptyList()
+    }
+
+    private fun blocked(
+        paths: List<String>,
+        reason: String,
+        blockedReason: String
+    ): RiskAssessment = RiskAssessment(
+        level = RiskLevel.BLOCKED,
+        reason = reason,
+        affectedPaths = paths,
+        requiresDiff = false,
+        requiresConfirmation = false,
+        blockedReason = blockedReason
+    )
 
     private fun isUnlockedInSettings(path: String): Boolean {
-        // Check if user has explicitly unlocked this protected path
+        // Check if user has explicitly unlocked this protected path (or its root)
         return permissionService.isProtectedPathUnlocked(path)
-    }
-
-    private fun getBlockedReason(path: String): String {
-        return when {
-            ProtectedPaths.isSystemPath(path) -> "System path requires settings unlock"
-            ProtectedPaths.isFirmwarePath(path) -> "Firmware path requires settings unlock"
-            ProtectedPaths.SENSITIVE_EXTENSIONS.any { path.endsWith(it) } ->
-                "Sensitive file type requires settings unlock"
-            else -> "Protected path requires settings unlock"
-        }
     }
 
     private fun isLowRiskCli(command: String): Boolean {
@@ -474,5 +519,60 @@ class RiskAssessor @Inject constructor(
             // But if someone uses raw CLI, we still want user confirmation (HIGH via else branch).
             // So badusb is intentionally NOT in the MEDIUM list.
         )
+    }
+}
+
+/**
+ * Narrow, auditable auto-approval policy.
+ *
+ * The historical behaviour — "auto-approve medium" running *every* MEDIUM
+ * action unattended — is removed. Auto-approval now requires all of:
+ *
+ *  1. the matching Settings checkbox is enabled;
+ *  2. the action is in the small allowlist below;
+ *  3. every affected path resolves inside the configured project directory
+ *     (Settings → default project path);
+ *  4. no path is protected (/int, /ext/update, key material) or an installed-app
+ *     directory.
+ *
+ * Everything else — deletes, moves out of the project, hardware actions, CLI,
+ * installs, downloads, firmware writes — always requires explicit confirmation.
+ */
+object AutoApprovePolicy {
+
+    /** MEDIUM actions that may run unattended once the user opts in. */
+    private val MEDIUM_AUTO_ACTIONS = setOf(
+        CommandAction.WRITE_FILE,
+        CommandAction.CREATE_DIRECTORY
+    )
+
+    /** HIGH actions that may run unattended, and only strictly inside the project. */
+    private val HIGH_AUTO_ACTIONS = setOf(
+        CommandAction.WRITE_FILE,
+        CommandAction.CREATE_DIRECTORY,
+        CommandAction.COPY,
+        CommandAction.MOVE,
+        CommandAction.RENAME
+    )
+
+    fun shouldAutoApprove(
+        command: ExecuteCommand,
+        assessment: RiskAssessment,
+        autoApproveMedium: Boolean,
+        autoApproveHigh: Boolean,
+        defaultProjectPath: String
+    ): Boolean {
+        if (assessment.level != RiskLevel.MEDIUM && assessment.level != RiskLevel.HIGH) return false
+
+        val paths = assessment.affectedPaths
+        if (paths.isEmpty()) return false
+        if (!paths.all { ProtectedPaths.isInsideProject(it, defaultProjectPath) }) return false
+        if (paths.any { ProtectedPaths.isProtected(it) || ProtectedPaths.isExecutableArea(it) }) return false
+
+        return when (assessment.level) {
+            RiskLevel.MEDIUM -> autoApproveMedium && command.action in MEDIUM_AUTO_ACTIONS
+            RiskLevel.HIGH -> autoApproveHigh && command.action in HIGH_AUTO_ACTIONS
+            else -> false
+        }
     }
 }

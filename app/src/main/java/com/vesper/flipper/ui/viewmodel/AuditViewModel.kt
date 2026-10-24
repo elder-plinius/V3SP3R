@@ -5,9 +5,11 @@ import androidx.lifecycle.viewModelScope
 import com.vesper.flipper.domain.executor.CommandExecutor
 import com.vesper.flipper.domain.model.AuditEntry
 import com.vesper.flipper.domain.model.AuditSummary
+import com.vesper.flipper.domain.model.CommandAction
 import com.vesper.flipper.domain.model.CommandResultData
 import com.vesper.flipper.domain.model.ExecuteCommand
 import com.vesper.flipper.domain.model.PendingApproval
+import com.vesper.flipper.domain.model.RiskLevel
 import com.vesper.flipper.domain.service.AuditService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,9 +24,10 @@ data class AuditState(
     val entries: List<AuditEntry> = emptyList(),
     val timeline: List<CommandTimelineItem> = emptyList(),
     val summary: AuditSummary? = null,
-    val isLoading: Boolean = false,
+    val isLoading: Boolean = true,
     val selectedEntry: AuditEntry? = null,
     val filterType: AuditFilterType = AuditFilterType.ALL,
+    val searchQuery: String = "",
     val replayingTraceId: String? = null,
     val pendingReplayApproval: PendingApproval? = null,
     val replayMessage: String? = null
@@ -32,9 +35,9 @@ data class AuditState(
 
 enum class AuditFilterType {
     ALL,
-    COMMANDS,
-    APPROVALS,
-    ERRORS
+    WRITES,
+    HIGH_RISK,
+    DENIED
 }
 
 enum class CommandTraceStatus {
@@ -86,7 +89,7 @@ class AuditViewModel @Inject constructor(
 
     private fun refreshState(entries: List<AuditEntry>, preserveReplay: Boolean) {
         val current = _state.value
-        val filteredEntries = filterEntries(entries, current.filterType)
+        val filteredEntries = filterEntries(entries, current.filterType, current.searchQuery)
         val timeline = buildTimeline(entries)
         _state.update {
             it.copy(
@@ -105,22 +108,49 @@ class AuditViewModel @Inject constructor(
         refreshState(entries = allEntries, preserveReplay = true)
     }
 
-    private fun filterEntries(entries: List<AuditEntry>, filterType: AuditFilterType): List<AuditEntry> {
-        return when (filterType) {
+    fun setSearchQuery(query: String) {
+        _state.update { it.copy(searchQuery = query) }
+        refreshState(entries = allEntries, preserveReplay = true)
+    }
+
+    fun clearFilters() {
+        _state.update { it.copy(filterType = AuditFilterType.ALL, searchQuery = "") }
+        refreshState(entries = allEntries, preserveReplay = true)
+    }
+
+    private fun filterEntries(
+        entries: List<AuditEntry>,
+        filterType: AuditFilterType,
+        query: String
+    ): List<AuditEntry> {
+        val byType = when (filterType) {
             AuditFilterType.ALL -> entries
-            AuditFilterType.COMMANDS -> entries.filter {
-                it.actionType.name.contains("COMMAND")
+            AuditFilterType.WRITES -> entries.filter { entry ->
+                entry.command?.action?.let { action -> action in WRITE_ACTIONS } == true
             }
-            AuditFilterType.APPROVALS -> entries.filter {
-                it.actionType.name.contains("APPROVAL")
+            AuditFilterType.HIGH_RISK -> entries.filter {
+                it.riskLevel == RiskLevel.HIGH || it.riskLevel == RiskLevel.BLOCKED
             }
-            AuditFilterType.ERRORS -> entries.filter {
-                it.actionType.name.contains("FAILED") ||
-                        it.actionType.name.contains("ERROR") ||
-                        it.actionType.name.contains("BLOCKED")
+            AuditFilterType.DENIED -> entries.filter {
+                it.actionType.name == "APPROVAL_DENIED" || it.actionType.name == "COMMAND_BLOCKED"
             }
         }
+        val trimmed = query.trim()
+        val byQuery = if (trimmed.isEmpty()) {
+            byType
+        } else {
+            byType.filter { entry ->
+                pathFor(entry)?.contains(trimmed, ignoreCase = true) == true
+            }
+        }
+        return byQuery.sortedByDescending { it.timestamp }
     }
+
+    private fun pathFor(entry: AuditEntry): String? =
+        entry.command?.args?.path
+            ?: entry.command?.args?.destinationPath
+            ?: entry.metadata["path"]
+            ?: entry.metadata["destination_path"]
 
     private fun buildTimeline(entries: List<AuditEntry>): List<CommandTimelineItem> {
         val commandLikeEntries = entries
@@ -135,7 +165,7 @@ class AuditViewModel @Inject constructor(
         commandLikeEntries.forEach { entry ->
             val key = entry.metadata["trace_id"]
                 ?: entry.metadata["approval_id"]?.let { "approval:$it" }
-                ?: entry.command?.let { "legacy:${entry.id}" }
+                ?: entry.command?.let { "legacy:" + entry.id }
                 ?: return@forEach
             grouped.getOrPut(key) { mutableListOf() }.add(entry)
         }
@@ -192,8 +222,8 @@ class AuditViewModel @Inject constructor(
         return when {
             !data?.message.isNullOrBlank() -> data?.message.orEmpty().take(180)
             !data?.content.isNullOrBlank() -> data?.content.orEmpty().lineSequence().firstOrNull().orEmpty().take(180)
-            data?.bytesWritten != null -> "Wrote ${data.bytesWritten} bytes"
-            data?.entries != null -> "Listed ${data.entries.size} entries"
+            data?.bytesWritten != null -> "Wrote ${data?.bytesWritten} bytes"
+            data?.entries != null -> "Listed ${data?.entries?.size ?: 0} entries"
             data?.deviceInfo != null -> "Fetched device info"
             data?.storageInfo != null -> "Fetched storage info"
             else -> "Command completed"
@@ -215,8 +245,9 @@ class AuditViewModel @Inject constructor(
             try {
                 val sessionId = auditService.getCurrentSessionId() ?: item.sessionId
                 val result = commandExecutor.execute(item.command, sessionId)
-                if (result.requiresConfirmation && !result.pendingApprovalId.isNullOrBlank()) {
-                    val pending = commandExecutor.getPendingApproval(result.pendingApprovalId)
+                val approvalId = result.pendingApprovalId
+                if (result.requiresConfirmation && !approvalId.isNullOrBlank()) {
+                    val pending = commandExecutor.getPendingApproval(approvalId)
                     _state.update {
                         it.copy(
                             pendingReplayApproval = pending,
@@ -306,12 +337,14 @@ class AuditViewModel @Inject constructor(
     fun clearAuditLog() {
         viewModelScope.launch {
             auditService.clearAll()
+            allEntries = emptyList()
             _state.update {
                 it.copy(
                     entries = emptyList(),
                     timeline = emptyList(),
                     pendingReplayApproval = null,
-                    replayMessage = null
+                    replayMessage = null,
+                    isLoading = false
                 )
             }
         }
@@ -321,5 +354,17 @@ class AuditViewModel @Inject constructor(
         viewModelScope.launch {
             auditService.clearOlderThan(days)
         }
+    }
+
+    private companion object {
+        val WRITE_ACTIONS = setOf(
+            CommandAction.WRITE_FILE,
+            CommandAction.CREATE_DIRECTORY,
+            CommandAction.DELETE,
+            CommandAction.MOVE,
+            CommandAction.RENAME,
+            CommandAction.COPY,
+            CommandAction.PUSH_ARTIFACT
+        )
     }
 }

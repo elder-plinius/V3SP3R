@@ -2,7 +2,9 @@ package com.vesper.flipper.ble
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.ActivityManager
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.*
@@ -12,6 +14,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
@@ -41,30 +44,84 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 
 /**
- * Foreground service managing BLE connection to Flipper Zero.
- * Handles scanning, connection, and GATT operations.
+ * Connection service for the Flipper Zero (BLE and USB serial).
+ *
+ * Lifecycle:
+ *  - created by [bindService] or a warm start; both are silent and post no notification;
+ *  - promoted to the foreground only when a scan or a connection actually starts;
+ *  - keeps the foreground notification while scanning/connecting/connected/reconnecting;
+ *  - drops the foreground and stops itself when disconnected and idle.
+ *
+ * All Bluetooth work runs on [serviceScope]; GATT callbacks are guarded so a
+ * vendor-stack exception cannot crash the process. Reconnects use capped
+ * exponential backoff and at most one series can be in flight.
  */
 @AndroidEntryPoint
 class FlipperBleService : Service() {
 
     private val binder = LocalBinder()
-    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /**
+     * Scope for all connection work. A SupervisorJob keeps one failed session
+     * from killing the others, and the handler keeps an unexpected throw on a
+     * background job from crashing the process.
+     */
+    private val serviceScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, throwable ->
+            Log.e(TAG, "Unhandled service coroutine failure", throwable)
+        }
+    )
 
     private var bluetoothAdapter: BluetoothAdapter? = null
+    @Volatile
     private var bluetoothGatt: BluetoothGatt? = null
     private var bleScanner: BluetoothLeScanner? = null
     private var usbManager: UsbManager? = null
+    @Volatile
     private var usbSerialDriver: UsbSerialDriver? = null
+    @Volatile
     private var usbSerialPort: UsbSerialPort? = null
+    @Volatile
     private var usbDeviceConnection: UsbDeviceConnection? = null
+    @Volatile
     private var connectedUsbDevice: UsbDevice? = null
     private var usbReadJob: Job? = null
-    private var bleKeepaliveJob: Job? = null
+    private var connectionWatchdogJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var connectAttemptTimeoutJob: Job? = null
+    private var scanTimeoutJob: Job? = null
+    private var broadScanFallbackJob: Job? = null
+    private var idleStopJob: Job? = null
     private var usbReceiverRegistered = false
+    private var bluetoothReceiverRegistered = false
+    @Volatile
     private var broadScanStarted = false
+    @Volatile
+    private var scanActive = false
+    @Volatile
+    private var foregroundActive = false
+    @Volatile
+    private var serviceStartRequested = false
+    @Volatile
+    private var hasBoundClients = false
+    @Volatile
+    private var sessionRequested = false
+    @Volatile
+    private var connectedSinceMs: Long? = null
+    @Volatile
+    private var lastPacketAtMs: Long = 0L
+    @Volatile
+    private var lastHealthPublishAtMs: Long = 0L
+    @Volatile
+    private var totalReconnectCount: Int = 0
+    @Volatile
+    private var lastPublishedState: ConnectionState? = null
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+
+    private val _connectionHealth = MutableStateFlow(ConnectionHealth())
+    val connectionHealth: StateFlow<ConnectionHealth> = _connectionHealth.asStateFlow()
 
     private val _discoveredDevices = MutableStateFlow<List<FlipperDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<FlipperDevice>> = _discoveredDevices.asStateFlow()
@@ -95,16 +152,25 @@ class FlipperBleService : Service() {
     private var currentUsbBaudRate: Int? = null
     @Volatile
     private var lastWriteFailureReason: String? = null
+    @Volatile
     private var serialCharacteristic: BluetoothGattCharacteristic? = null
+    @Volatile
     private var serialRxCharacteristic: BluetoothGattCharacteristic? = null
+    @Volatile
     private var serialServiceUuid: UUID? = null
+    @Volatile
     private var serialOverflowCharacteristic: BluetoothGattCharacteristic? = null
+    @Volatile
     private var serialResetCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile
     private var remainingSerialBufferBytes: Int? = null
+    @Volatile
     private var pendingConnectionName: String? = null
+    @Volatile
     private var lastRequestedDeviceAddress: String? = null
+    @Volatile
     private var lastRequestedDeviceName: String? = null
+    @Volatile
     private var lastRequestedBluetoothDevice: BluetoothDevice? = null
     @Volatile
     private var reconnectAttemptCount: Int = 0
@@ -133,22 +199,50 @@ class FlipperBleService : Service() {
                 }
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
                     val attachedDevice = intent.extractUsbDeviceExtra() ?: return
-                    if (!isLikelyFlipperUsbDevice(attachedDevice)) return
                     serviceScope.launch {
-                        if (!isCommandTransportConnected()) {
-                            connectUsbInternal(preferredDevice = attachedDevice)
+                        if (isCommandTransportConnected()) return@launch
+                        if (!isLikelyFlipperUsbDevice(attachedDevice)) return@launch
+                        ensureForeground()
+                        sessionRequested = true
+                        val connected = connectUsbInternal(preferredDevice = attachedDevice)
+                        if (!connected) {
+                            sessionRequested = false
+                            scheduleIdleShutdown()
                         }
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val detachedDevice = intent.extractUsbDeviceExtra() ?: return
-                    if (detachedDevice.deviceId == connectedUsbDevice?.deviceId) {
+                    serviceScope.launch {
+                        if (detachedDevice.deviceId != connectedUsbDevice?.deviceId) return@launch
                         disconnectUsbTransport(
                             setState = true,
-                            errorMessage = "USB disconnected"
+                            errorMessage = "USB cable disconnected. Plug it back in or connect over Bluetooth.",
+                            failure = ConnectionFailure.TRANSPORT_UNAVAILABLE
                         )
+                        sessionRequested = false
+                        scheduleIdleShutdown()
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * Keeps the BLE session honest across radio state changes. Turning Bluetooth
+     * off always tears the link down and cancels pending reconnects; turning it
+     * back on resumes a single reconnect for a session the user still wants.
+     */
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            val reportedState = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            serviceScope.launch {
+                // The receiver is exported (required to receive this broadcast on
+                // Android 14+), so re-read the real adapter state instead of
+                // trusting the intent extras.
+                val actualState = runCatching { bluetoothAdapter?.state }.getOrNull()
+                handleBluetoothStateChanged(actualState ?: reportedState)
             }
         }
     }
@@ -160,45 +254,156 @@ class FlipperBleService : Service() {
         fun getService(): FlipperBleService = this@FlipperBleService
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder {
+        hasBoundClients = true
+        idleStopJob?.cancel()
+        idleStopJob = null
+        return binder
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        hasBoundClients = false
+        scheduleIdleShutdown()
+        return false
+    }
 
     override fun onCreate() {
         super.onCreate()
         initializeBluetooth()
         initializeUsb()
-        loadPersistedConfirmedFlippers()
         registerUsbReceivers()
+        registerBluetoothReceivers()
         flipperProtocol.setBleService(this)
+        serviceScope.launch {
+            runCatching { loadPersistedConfirmedFlippers() }
+                .onFailure { Log.w(TAG, "Could not restore confirmed Flippers: ${it.message}") }
+        }
+        // Publish notification + health for every distinct state, whichever thread
+        // produced it. StateFlow values are conflated, which is what we want here.
+        serviceScope.launch {
+            _connectionState.collect { state ->
+                runCatching { onConnectionStatePublished(state) }
+                    .onFailure { Log.w(TAG, "Could not publish connection state: ${it.message}") }
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START_FOREGROUND -> startForegroundService()
+            ACTION_START_SCAN -> startScan()
+            ACTION_CONNECT -> {
+                val address = intent?.getStringExtra(EXTRA_DEVICE_ADDRESS)
+                val name = intent?.getStringExtra(EXTRA_DEVICE_NAME)
+                if (address.isNullOrBlank()) {
+                    setConnectionState(
+                        ConnectionState.Error(
+                            message = "No device address was supplied. Scan again and pick the Flipper.",
+                            reason = ConnectionFailure.DEVICE_NOT_FOUND
+                        )
+                    )
+                    scheduleIdleShutdown()
+                } else {
+                    connect(
+                        FlipperDevice(
+                            address = address,
+                            name = name?.takeIf { it.isNotBlank() } ?: DEFAULT_FLIPPER_NAME,
+                            rssi = 0
+                        )
+                    )
+                }
+            }
+            ACTION_CONNECT_USB -> connectUsbIfAvailable()
+            ACTION_STOP_SCAN -> stopScan()
             ACTION_STOP -> {
-                stopSelf()
+                // Teardown performs Binder/USB calls; never block the main thread
+                // that dispatches onStartCommand.
+                serviceScope.launch {
+                    stopSession()
+                    serviceStartRequested = false
+                    stopSelf()
+                }
                 return START_NOT_STICKY
             }
+            ACTION_START_FOREGROUND, ACTION_SESSION_ACTIVE -> {
+                // Legacy action kept for API compatibility: it only promotes the
+                // service and keeps it alive while a session is busy.
+                ensureForeground()
+                scheduleIdleShutdown()
+            }
+            ACTION_WARM_START -> scheduleIdleShutdown()
             else -> {
-                // START_STICKY restarts with a null intent after the system kills the
-                // service. We must call startForeground() promptly or Android 12+ will
-                // throw ForegroundServiceDidNotStartInTimeException and crash the app.
-                startForegroundService()
+                // Warm start (and null intents): stay available without posting a
+                // notification. If no session starts, the service stops itself.
+                scheduleIdleShutdown()
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        sessionRequested = false
+        // Detach from system events first so no late broadcast can start work on
+        // a service that is being destroyed.
         unregisterUsbReceivers()
-        disconnect()
+        unregisterBluetoothReceivers()
+        stopScanInternal(updateState = false)
+        cancelPendingReconnect()
+        cancelConnectAttemptTimeout()
+        stopConnectionWatchdog()
+        idleStopJob?.cancel()
+        idleStopJob = null
+        disconnectInternal()
+        dropForeground()
         serviceScope.cancel()
+        super.onDestroy()
     }
 
     private fun initializeBluetooth() {
-        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        bluetoothAdapter = bluetoothManager.adapter
-        bleScanner = bluetoothAdapter?.bluetoothLeScanner
+        runCatching {
+            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            bluetoothAdapter = bluetoothManager?.adapter
+            bleScanner = currentBleScanner(bluetoothAdapter)
+        }.onFailure { Log.w(TAG, "Bluetooth initialization failed: ${it.message}") }
+    }
+
+    private fun refreshBluetoothScanner() {
+        runCatching {
+            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            bluetoothManager?.adapter?.let { adapter ->
+                bluetoothAdapter = adapter
+                bleScanner = currentBleScanner(adapter)
+            }
+        }.onFailure { Log.w(TAG, "Could not refresh BLE scanner: ${it.message}") }
+    }
+
+    private fun currentBleScanner(adapter: BluetoothAdapter?): BluetoothLeScanner? {
+        if (adapter == null) return null
+        if (!hasBluetoothPermissions()) return null
+        if (!runCatching { adapter.isEnabled }.getOrDefault(false)) return null
+        return runCatching { adapter.bluetoothLeScanner }.getOrNull()
+    }
+
+    /**
+     * Picks a scan mode that matches the app visibility: low latency while the
+     * user is watching the scan, low power otherwise so a forgotten scan does
+     * not keep the radio at full duty cycle.
+     */
+    private fun resolveScanMode(): Int {
+        return if (isAppInForeground()) {
+            ScanSettings.SCAN_MODE_LOW_LATENCY
+        } else {
+            ScanSettings.SCAN_MODE_LOW_POWER
+        }
+    }
+
+    private fun isAppInForeground(): Boolean {
+        val activityManager = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return true
+        return runCatching {
+            val processInfo = ActivityManager.RunningAppProcessInfo()
+            ActivityManager.getMyMemoryState(processInfo)
+            processInfo.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+        }.getOrDefault(true)
     }
 
     private fun initializeUsb() {
@@ -212,13 +417,14 @@ class FlipperBleService : Service() {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
-        ContextCompat.registerReceiver(
-            this,
-            usbBroadcastReceiver,
-            filter,
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
-        usbReceiverRegistered = true
+        usbReceiverRegistered = runCatching {
+            ContextCompat.registerReceiver(
+                this,
+                usbBroadcastReceiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        }.isSuccess
     }
 
     private fun unregisterUsbReceivers() {
@@ -227,59 +433,325 @@ class FlipperBleService : Service() {
         usbReceiverRegistered = false
     }
 
-    private fun startForegroundService() {
-        val notification = createNotification()
-        startForeground(NOTIFICATION_ID, notification)
+    private fun registerBluetoothReceivers() {
+        if (bluetoothReceiverRegistered) return
+        val registered = runCatching {
+            // Bluetooth state changes are sent by the Bluetooth stack process, not
+            // the system server. Android 14+ does not deliver them to
+            // NOT_EXPORTED receivers, so this one must be exported.
+            ContextCompat.registerReceiver(
+                this,
+                bluetoothStateReceiver,
+                IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                ContextCompat.RECEIVER_EXPORTED
+            )
+        }.isSuccess
+        bluetoothReceiverRegistered = registered
     }
 
-    private fun createNotification(): Notification {
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
-        )
+    private fun unregisterBluetoothReceivers() {
+        if (!bluetoothReceiverRegistered) return
+        runCatching { unregisterReceiver(bluetoothStateReceiver) }
+        bluetoothReceiverRegistered = false
+    }
 
+    /**
+     * Promotes the service to the foreground for an active scan/connection.
+     *
+     * The service is normally created by a bind, so it is explicitly marked as
+     * started first; that keeps the foreground promotion valid when the last
+     * client unbinds. Foreground type is passed explicitly on API 29+ because
+     * Android 14 requires it to match the manifest declaration.
+     */
+    private fun ensureForeground() {
+        idleStopJob?.cancel()
+        idleStopJob = null
+        if (foregroundActive) {
+            updateNotification()
+            return
+        }
+        foregroundActive = true
+        if (!serviceStartRequested) {
+            // Marking the service as started is idempotent and must not be
+            // repeated on every promotion: each re-entry would retry a failing
+            // startForeground() and could spin.
+            serviceStartRequested = runCatching {
+                super.startService(
+                    Intent(this, FlipperBleService::class.java).setAction(ACTION_SESSION_ACTIVE)
+                )
+                true
+            }.onFailure {
+                Log.w(TAG, "Could not mark service as started: ${it.message}")
+            }.getOrDefault(false)
+        }
+
+        val notification = buildNotification()
+        val started = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        }
+        if (started.isFailure) {
+            foregroundActive = false
+            Log.w(TAG, "startForeground failed: ${started.exceptionOrNull()?.message}")
+        }
+    }
+
+    private fun dropForeground() {
+        if (!foregroundActive) return
+        foregroundActive = false
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+    }
+
+    private fun buildNotification(): Notification {
+        val openAppIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            NOTIFICATION_CONTENT_INTENT_REQUEST_CODE,
+            openAppIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val statusText = getConnectionText()
         return NotificationCompat.Builder(this, VesperApplication.CHANNEL_BLE)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(getConnectionText())
+            .setContentTitle(getString(R.string.notification_channel_ble))
+            .setContentText(statusText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(statusText))
             .setSmallIcon(R.drawable.ic_flipper_notification)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(contentIntent)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setShowWhen(false)
             .build()
     }
 
     private fun getConnectionText(): String {
         return when (val state = _connectionState.value) {
-            is ConnectionState.Connected -> getString(R.string.ble_connected, state.deviceName)
+            is ConnectionState.Connected -> {
+                val reconnectCount = _connectionHealth.value.reconnectCount
+                val base = getString(R.string.ble_connected, state.deviceName)
+                if (reconnectCount > 0) "$base • $reconnectCount reconnects" else base
+            }
             is ConnectionState.Connecting -> getString(R.string.ble_connecting, state.deviceName)
             is ConnectionState.Disconnected -> getString(R.string.ble_disconnected)
             is ConnectionState.Scanning -> getString(R.string.ble_scanning)
-            is ConnectionState.Error -> getString(R.string.ble_error, state.message)
+            is ConnectionState.Error -> getString(R.string.ble_error, state.message.take(180))
         }
     }
 
     private fun updateNotification() {
-        val notification = createNotification()
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-        notificationManager.notify(NOTIFICATION_ID, notification)
+        if (!foregroundActive) return
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return
+        runCatching { notificationManager.notify(NOTIFICATION_ID, buildNotification()) }
+    }
+
+    private fun setConnectionState(state: ConnectionState) {
+        _connectionState.value = state
+        onConnectionStatePublished(state)
+    }
+
+    private fun onConnectionStatePublished(state: ConnectionState) {
+        // setConnectionState() calls this directly and the StateFlow collector
+        // calls it again; publish each distinct state only once.
+        if (lastPublishedState === state) return
+        lastPublishedState = state
+        if (state is ConnectionState.Connected) {
+            if (connectedSinceMs == null) {
+                connectedSinceMs = System.currentTimeMillis()
+            }
+        } else if (state is ConnectionState.Disconnected || state is ConnectionState.Error) {
+            connectedSinceMs = null
+        }
+        updateConnectionHealth(force = true)
+        updateNotification()
+    }
+
+    private fun updateConnectionHealth(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastHealthPublishAtMs < HEALTH_PUBLISH_MIN_INTERVAL_MS) return
+        lastHealthPublishAtMs = now
+        val connectedAt = connectedSinceMs
+        val lastActivity = lastBleActivityAtMs
+        _connectionHealth.value = ConnectionHealth(
+            lastPacketAtMs = lastPacketAtMs,
+            lastActivityAtMs = lastActivity,
+            connectedSinceMs = connectedAt,
+            reconnectCount = totalReconnectCount,
+            silentForMs = if (connectedAt != null && lastActivity > 0L) {
+                (now - lastActivity).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+        )
+    }
+
+    private fun isSessionBusy(): Boolean {
+        if (scanActive) return true
+        if (reconnectJob?.isActive == true) return true
+        if (activeTransport != CommandTransport.NONE) return true
+        return when (_connectionState.value) {
+            is ConnectionState.Connected,
+            is ConnectionState.Connecting,
+            is ConnectionState.Scanning -> true
+            else -> false
+        }
+    }
+
+    /**
+     * Drops the foreground notification and stops the service once a session is
+     * over. A grace period avoids notification flicker between back-to-back
+     * transports (for example, scan -> connect).
+     */
+    private fun scheduleIdleShutdown() {
+        idleStopJob?.cancel()
+        if (isSessionBusy()) return
+        idleStopJob = serviceScope.launch {
+            delay(IDLE_STOP_GRACE_MS)
+            if (isSessionBusy()) return@launch
+            stopConnectionWatchdog()
+            dropForeground()
+            if (!hasBoundClients) {
+                serviceStartRequested = false
+                stopSelf()
+            }
+        }
+    }
+
+    private fun stopSession() {
+        sessionRequested = false
+        cancelPendingReconnect()
+        cancelConnectAttemptTimeout()
+        stopScanInternal(updateState = false)
+        disconnectInternal()
+        scheduleIdleShutdown()
+    }
+
+    private suspend fun handleBluetoothStateChanged(state: Int) {
+        when (state) {
+            BluetoothAdapter.STATE_OFF -> {
+                Log.i(TAG, "Bluetooth turned off; tearing down BLE session")
+                stopScanInternal(updateState = false)
+                cancelPendingReconnect()
+                cancelConnectAttemptTimeout()
+                stopConnectionWatchdog()
+                teardownBleTransport(clearRequestedDevice = false)
+                _connectedDevice.value = null
+                connectedSinceMs = null
+                if (sessionRequested || _connectionState.value is ConnectionState.Connected ||
+                    _connectionState.value is ConnectionState.Connecting
+                ) {
+                    setConnectionState(
+                        ConnectionState.Error(
+                            message = "Bluetooth was turned off. Turn Bluetooth on, unlock the Flipper, then reconnect.",
+                            reason = ConnectionFailure.BLUETOOTH_DISABLED
+                        )
+                    )
+                } else {
+                    setConnectionState(ConnectionState.Disconnected)
+                }
+                scheduleIdleShutdown()
+            }
+            BluetoothAdapter.STATE_ON -> {
+                if (!hasBluetoothPermissions()) {
+                    sessionRequested = false
+                    return
+                }
+                // The user still wants the session: make one reconnect attempt
+                // series with a fresh backoff budget.
+                if (sessionRequested &&
+                    lastRequestedDeviceAddress != null &&
+                    _connectionState.value !is ConnectionState.Connected
+                ) {
+                    reconnectAttemptCount = 0
+                    if (!scheduleReconnect(reason = "Bluetooth re-enabled")) {
+                        sessionRequested = false
+                        scheduleIdleShutdown()
+                    }
+                }
+            }
+            BluetoothAdapter.STATE_TURNING_ON,
+            BluetoothAdapter.STATE_TURNING_OFF -> Unit
+        }
     }
 
     // Scanning - Now finds ALL potential Flippers, even renamed ones
 
-    @SuppressLint("MissingPermission")
+    /**
+     * Starts a scan session. Promotes the service to the foreground and runs all
+     * Bluetooth work off the caller thread.
+     */
     fun startScan() {
+        serviceScope.launch { startScanInternal() }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startScanInternal() {
+        // Satisfy the startForegroundService() contract before any early return:
+        // Android kills the app if startForeground() is not called within 5s.
+        ensureForeground()
+        val connectingOrConnected = _connectionState.value is ConnectionState.Connected ||
+                _connectionState.value is ConnectionState.Connecting ||
+                activeTransport != CommandTransport.NONE ||
+                reconnectJob?.isActive == true
+        if (connectingOrConnected) {
+            Log.d(TAG, "Scan request ignored: a connection session is already active")
+            scheduleIdleShutdown()
+            return
+        }
+        sessionRequested = true
         if (!hasBluetoothPermissions()) {
-            _connectionState.value = ConnectionState.Error("Bluetooth permissions not granted")
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Nearby devices permission is required to scan. Grant it in Settings, then scan again.",
+                    reason = ConnectionFailure.PERMISSION_DENIED
+                )
+            )
+            sessionRequested = false
+            scheduleIdleShutdown()
             return
         }
 
+        refreshBluetoothScanner()
         if (bluetoothAdapter?.isEnabled != true) {
-            _connectionState.value = ConnectionState.Error("Bluetooth is disabled")
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Bluetooth is unavailable or off. Turn Bluetooth on, then scan again.",
+                    reason = ConnectionFailure.BLUETOOTH_DISABLED
+                )
+            )
+            sessionRequested = false
+            scheduleIdleShutdown()
             return
         }
 
-        _connectionState.value = ConnectionState.Scanning
+        val scanner = bleScanner
+        if (scanner == null) {
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Bluetooth LE scanning is unavailable right now. Toggle Bluetooth off and on, then retry.",
+                    reason = ConnectionFailure.SCAN_FAILED
+                )
+            )
+            sessionRequested = false
+            scheduleIdleShutdown()
+            return
+        }
+
+        if (scanActive) {
+            stopScanInternal(updateState = false)
+        }
+        setConnectionState(ConnectionState.Scanning)
         _discoveredDevices.value = emptyList()
         seedBondedFlippersIntoDiscoveredList()
         broadScanStarted = false
@@ -292,32 +764,54 @@ class FlipperBleService : Service() {
         }
 
         val scanSettings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(resolveScanMode())
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .build()
 
         try {
-            bleScanner?.startScan(flipperFilters, scanSettings, scanCallback)
+            scanner.startScan(flipperFilters, scanSettings, scanCallback)
+            scanActive = true
+        } catch (security: SecurityException) {
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Nearby devices permission was revoked while starting the scan. Grant it and retry.",
+                    reason = ConnectionFailure.PERMISSION_DENIED
+                )
+            )
+            sessionRequested = false
+            scheduleIdleShutdown()
+            return
         } catch (e: IllegalStateException) {
-            _connectionState.value = ConnectionState.Error("Failed to start BLE scan: ${e.message}")
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Bluetooth could not start scanning (${e.message ?: "adapter busy"}). Toggle Bluetooth off/on and retry.",
+                    reason = ConnectionFailure.SCAN_FAILED
+                )
+            )
+            sessionRequested = false
+            scheduleIdleShutdown()
             return
         }
 
         // Fallback broad scan only if filtered scan found nothing after a short window.
-        serviceScope.launch {
+        broadScanFallbackJob?.cancel()
+        broadScanFallbackJob = serviceScope.launch {
             delay(BROAD_SCAN_FALLBACK_DELAY_MS)
-            if (_connectionState.value is ConnectionState.Scanning &&
-                _discoveredDevices.value.isEmpty() &&
-                !broadScanStarted
-            ) {
+            if (scanActive && _discoveredDevices.value.isEmpty() && !broadScanStarted) {
                 startBroadScan()
             }
         }
 
-        // Auto-stop scan after timeout
-        serviceScope.launch {
+        // Auto-stop the scan after the timeout so a forgotten scan cannot drain the radio.
+        scanTimeoutJob?.cancel()
+        scanTimeoutJob = serviceScope.launch {
             delay(SCAN_TIMEOUT_MS)
-            stopScan()
+            if (scanActive) {
+                scanTimeoutJob = null
+                stopScanInternal(updateState = true)
+                sessionRequested = false
+                scheduleIdleShutdown()
+            }
         }
     }
 
@@ -328,50 +822,105 @@ class FlipperBleService : Service() {
 
         // Broad scan without filters - catches renamed Flippers
         val broadSettings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(resolveScanMode())
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .build()
 
         try {
             bleScanner?.startScan(null, broadSettings, broadScanCallback)
             broadScanStarted = true
+        } catch (_: SecurityException) {
+            // Permission revoked; the filtered scan is torn down by the same event.
         } catch (_: IllegalStateException) {
             // Keep silent; filtered scan remains primary path.
         }
     }
 
-    @SuppressLint("MissingPermission")
+    /**
+     * Stops scanning, cancels the scan timeout/fallback jobs, and ends the scan
+     * session when no connection or reconnect still needs the service.
+     */
     fun stopScan() {
-        if (hasBluetoothPermissions()) {
-            bleScanner?.stopScan(scanCallback)
-            bleScanner?.stopScan(broadScanCallback)
+        serviceScope.launch {
+            stopScanInternal(updateState = true)
+            if (!isSessionBusy()) {
+                sessionRequested = false
+                scheduleIdleShutdown()
+            }
         }
+    }
+
+    private fun stopScanInternal(updateState: Boolean) {
+        scanTimeoutJob?.cancel()
+        scanTimeoutJob = null
+        broadScanFallbackJob?.cancel()
+        broadScanFallbackJob = null
+        if (scanActive || broadScanStarted) {
+            // stopScan() throws if the permission was revoked; attempt it anyway
+            // so the scanner registration cannot leak.
+            runCatching { bleScanner?.stopScan(scanCallback) }
+            runCatching { bleScanner?.stopScan(broadScanCallback) }
+        }
+        scanActive = false
         broadScanStarted = false
-        if (_connectionState.value is ConnectionState.Scanning) {
-            _connectionState.value = ConnectionState.Disconnected
+        if (updateState && _connectionState.value is ConnectionState.Scanning) {
+            setConnectionState(ConnectionState.Disconnected)
         }
     }
 
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            addDiscoveredDevice(result, isConfirmedFlipper = true)
+            try {
+                addDiscoveredDevice(result, isConfirmedFlipper = true)
+            } catch (t: Throwable) {
+                // Scan callbacks run on a Binder thread; never let one crash the app.
+                Log.w(TAG, "Filtered scan result ignored: ${t.message}")
+            }
         }
 
         @SuppressLint("MissingPermission")
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
-            results.forEach { result ->
-                addDiscoveredDevice(result, isConfirmedFlipper = true)
+            try {
+                results.forEach { result ->
+                    addDiscoveredDevice(result, isConfirmedFlipper = true)
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Filtered scan batch ignored: ${t.message}")
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
-            // Fallback to broad scan when hardware rejects filtered mode.
-            if (!broadScanStarted) {
-                startBroadScan()
-            }
-            if (!broadScanStarted) {
-                _connectionState.value = ConnectionState.Error("Scan failed: $errorCode")
+            try {
+                if (errorCode == SCAN_FAILED_APPLICATION_REGISTRATION_FAILED) {
+                    stopScanInternal(updateState = false)
+                    sessionRequested = false
+                    setConnectionState(
+                        ConnectionState.Error(
+                            message = "Android rejected the BLE scan registration. Toggle Bluetooth off and on, then scan again.",
+                            reason = ConnectionFailure.SCAN_FAILED
+                        )
+                    )
+                    scheduleIdleShutdown()
+                    return
+                }
+                // Fallback to broad scan when hardware rejects filtered mode.
+                if (!broadScanStarted) {
+                    startBroadScan()
+                }
+                if (!broadScanStarted) {
+                    stopScanInternal(updateState = false)
+                    sessionRequested = false
+                    setConnectionState(
+                        ConnectionState.Error(
+                            message = "BLE scan failed (code $errorCode). Move closer to the Flipper and try again.",
+                            reason = ConnectionFailure.SCAN_FAILED
+                        )
+                    )
+                    scheduleIdleShutdown()
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Scan failure handler failed: ${t.message}")
             }
         }
     }
@@ -380,58 +929,56 @@ class FlipperBleService : Service() {
     private val broadScanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val hasKnownService = hasKnownFlipperService(result)
-            val normalizedAddress = normalizeBleAddress(result.device.address)
-            val wasConfirmedEarlier = normalizedAddress?.let { confirmedFlipperAddresses.contains(it) } == true
-            val hasKnownAddressPrefix = hasKnownFlipperAddressPrefix(result.device.address)
-            val hasLikelyFlipperName = isLikelyFlipperName(resolveScanDeviceName(result))
-            val hasLikelyManufacturerData = hasLikelyFlipperManufacturerData(result)
-
-            if (hasKnownService ||
-                wasConfirmedEarlier ||
-                hasKnownAddressPrefix ||
-                hasLikelyFlipperName ||
-                hasLikelyManufacturerData
-            ) {
+            try {
+                if (!isLikelyFlipperScanResult(result)) return
                 addDiscoveredDevice(
                     result = result,
-                    isConfirmedFlipper = hasKnownService ||
-                            wasConfirmedEarlier ||
-                            hasKnownAddressPrefix ||
-                            hasLikelyManufacturerData
+                    isConfirmedFlipper = isConfirmedFlipperScanResult(result)
                 )
+            } catch (t: Throwable) {
+                Log.w(TAG, "Broad scan result ignored: ${t.message}")
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
-            results.forEach { result ->
-                val hasKnownService = hasKnownFlipperService(result)
-                val normalizedAddress = normalizeBleAddress(result.device.address)
-                val wasConfirmedEarlier = normalizedAddress?.let { confirmedFlipperAddresses.contains(it) } == true
-                val hasKnownAddressPrefix = hasKnownFlipperAddressPrefix(result.device.address)
-                val hasLikelyFlipperName = isLikelyFlipperName(resolveScanDeviceName(result))
-                val hasLikelyManufacturerData = hasLikelyFlipperManufacturerData(result)
-                if (hasKnownService ||
-                    wasConfirmedEarlier ||
-                    hasKnownAddressPrefix ||
-                    hasLikelyFlipperName ||
-                    hasLikelyManufacturerData
-                ) {
-                    addDiscoveredDevice(
-                        result = result,
-                        isConfirmedFlipper = hasKnownService ||
-                                wasConfirmedEarlier ||
-                                hasKnownAddressPrefix ||
-                                hasLikelyManufacturerData
-                    )
+            try {
+                results.forEach { result ->
+                    if (isLikelyFlipperScanResult(result)) {
+                        addDiscoveredDevice(
+                            result = result,
+                            isConfirmedFlipper = isConfirmedFlipperScanResult(result)
+                        )
+                    }
                 }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Broad scan batch ignored: ${t.message}")
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
-            // Silent fail for broad scan - filtered scan is primary
+            broadScanStarted = false
+            Log.w(TAG, "Broad scan failed with code $errorCode")
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun isLikelyFlipperScanResult(result: ScanResult): Boolean {
+        return hasKnownFlipperService(result) ||
+                normalizeBleAddress(result.device.address)
+                    ?.let { confirmedFlipperAddresses.contains(it) } == true ||
+                hasKnownFlipperAddressPrefix(result.device.address) ||
+                isLikelyFlipperName(resolveScanDeviceName(result)) ||
+                hasLikelyFlipperManufacturerData(result)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun isConfirmedFlipperScanResult(result: ScanResult): Boolean {
+        return hasKnownFlipperService(result) ||
+                normalizeBleAddress(result.device.address)
+                    ?.let { confirmedFlipperAddresses.contains(it) } == true ||
+                hasKnownFlipperAddressPrefix(result.device.address) ||
+                hasLikelyFlipperManufacturerData(result)
     }
 
     @SuppressLint("MissingPermission")
@@ -456,41 +1003,86 @@ class FlipperBleService : Service() {
             isConfirmedFlipper = isConfirmedFlipper
         )
 
-        val currentDevices = _discoveredDevices.value.toMutableList()
-        val existingIndex = currentDevices.indexOfFirst { it.address == device.address }
-        if (existingIndex >= 0) {
-            // Update existing device, prefer confirmed status
-            val existing = currentDevices[existingIndex]
-            val resolvedName = if (isPlaceholderName(name) && !isPlaceholderName(existing.name)) {
-                existing.name
+        _discoveredDevices.update { currentDevices ->
+            val updated = currentDevices.toMutableList()
+            val existingIndex = updated.indexOfFirst { it.address == device.address }
+            if (existingIndex >= 0) {
+                // Update existing device, prefer confirmed status
+                val existing = updated[existingIndex]
+                val resolvedName = if (isPlaceholderName(name) && !isPlaceholderName(existing.name)) {
+                    existing.name
+                } else {
+                    name
+                }
+                updated[existingIndex] = flipperDevice.copy(
+                    name = resolvedName,
+                    isConfirmedFlipper = existing.isConfirmedFlipper || isConfirmedFlipper
+                )
             } else {
-                name
+                updated.add(flipperDevice)
             }
-            currentDevices[existingIndex] = flipperDevice.copy(
-                name = resolvedName,
-                isConfirmedFlipper = existing.isConfirmedFlipper || isConfirmedFlipper
-            )
-        } else {
-            currentDevices.add(flipperDevice)
+            // Sort: confirmed Flippers first, then by signal strength
+            updated.sortedWith(
+                compareByDescending<FlipperDevice> { it.isConfirmedFlipper }
+                    .thenByDescending { it.rssi }
+            ).take(MAX_DISCOVERED_DEVICES)
         }
-        // Sort: confirmed Flippers first, then by signal strength
-        _discoveredDevices.value = currentDevices.sortedWith(
-            compareByDescending<FlipperDevice> { it.isConfirmedFlipper }
-                .thenByDescending { it.rssi }
-        ).take(MAX_DISCOVERED_DEVICES)
     }
 
     // Connection
 
-    @SuppressLint("MissingPermission")
+    /**
+     * Connects to a discovered Flipper. The actual GATT work runs on the service
+     * scope so callers, including UI callbacks, never block on Bluetooth.
+     */
     fun connect(device: FlipperDevice) {
+        // Mark the session immediately so a quick Disconnect wins the race with
+        // the coroutine below.
+        sessionRequested = true
+        serviceScope.launch {
+            ensureForeground()
+            if (!sessionRequested) {
+                scheduleIdleShutdown()
+                return@launch
+            }
+            connectInternal(device)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun connectInternal(device: FlipperDevice) {
+        if (!sessionRequested) return
         if (!hasBluetoothPermissions()) {
-            _connectionState.value = ConnectionState.Error("Bluetooth permissions not granted")
+            sessionRequested = false
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Nearby devices permission is required to connect. Grant it, then retry.",
+                    reason = ConnectionFailure.PERMISSION_DENIED
+                )
+            )
+            scheduleIdleShutdown()
             return
         }
 
-        stopScan()
-        disconnect()
+        refreshBluetoothScanner()
+        if (bluetoothAdapter?.isEnabled != true) {
+            sessionRequested = false
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Bluetooth is unavailable or off. Turn Bluetooth on, unlock the Flipper, then connect.",
+                    reason = ConnectionFailure.BLUETOOTH_DISABLED
+                )
+            )
+            scheduleIdleShutdown()
+            return
+        }
+
+        stopScanInternal(updateState = false)
+        cancelPendingReconnect()
+        cancelConnectAttemptTimeout()
+        teardownAllTransports(updateState = false, clearRequestedDevice = true)
+        flipperProtocol.onConnectionReset()
+
         val resolvedDevice = discoveredBluetoothDevices[device.address]
             ?: runCatching { bluetoothAdapter?.getRemoteDevice(device.address) }.getOrNull()
         val targetAddress = resolvedDevice?.address ?: device.address
@@ -500,75 +1092,142 @@ class FlipperBleService : Service() {
         reconnectAttemptCount = 0
         pendingConnectionName = device.name.takeIf { it.isNotBlank() && !isPlaceholderName(it) }
 
-        _connectionState.value = ConnectionState.Connecting(device.name)
+        setConnectionState(ConnectionState.Connecting(device.name))
 
         Log.d(
             TAG,
             "connect requested name=${device.name} target=$targetAddress resolved=${resolvedDevice != null}"
         )
-        bluetoothGatt = resolvedDevice?.let { connectGattCompat(it, autoConnect = false) }
-        if (bluetoothGatt == null) {
+        val gatt = resolvedDevice?.let { connectGattCompat(it, autoConnect = false) }
+        if (!sessionRequested ||
+            !currentCoroutineContext().isActive ||
+            activeTransport != CommandTransport.NONE
+        ) {
+            // Disconnected or another transport won while connectGatt() was in
+            // flight: do not install an orphaned connection.
+            runCatching { gatt?.disconnect() }
+            runCatching { gatt?.close() }
+            gattLinkConnected = false
+            connectedSinceMs = null
+            return
+        }
+        bluetoothGatt = gatt
+        if (gatt == null) {
             pendingConnectionName = null
-            _connectionState.value = ConnectionState.Error("Failed to initiate BLE connection to ${device.name}")
-            updateNotification()
+            sessionRequested = false
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Could not start a BLE connection to ${device.name}. " +
+                            "Keep the Flipper unlocked with its Bluetooth app open, then retry.",
+                    reason = ConnectionFailure.DEVICE_NOT_FOUND
+                )
+            )
+            scheduleIdleShutdown()
+        } else {
+            startConnectAttemptTimeout()
         }
     }
 
+    /**
+     * Connects over USB when a compatible serial Flipper is attached. Cancels any
+     * pending BLE reconnect first so the two transports cannot fight.
+     */
     fun connectUsbIfAvailable() {
+        sessionRequested = true
         serviceScope.launch {
-            stopScan()
-            disconnect()
-            connectUsbInternal()
+            ensureForeground()
+            if (!sessionRequested) {
+                scheduleIdleShutdown()
+                return@launch
+            }
+            val connected = connectUsbInternal()
+            if (!connected) {
+                sessionRequested = false
+                scheduleIdleShutdown()
+            }
         }
     }
 
     private suspend fun connectUsbInternal(preferredDevice: UsbDevice? = null): Boolean {
+        if (!sessionRequested) return false
+        // A USB connect always wins: stop scanning and tear the BLE side down
+        // first so two transports cannot own the protocol at the same time.
+        stopScanInternal(updateState = false)
+        cancelPendingReconnect()
+        cancelConnectAttemptTimeout()
+        teardownAllTransports(updateState = false, clearRequestedDevice = true)
+
         val manager = usbManager ?: run {
-            _connectionState.value = ConnectionState.Error("USB host manager unavailable")
-            updateNotification()
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "USB host support is unavailable on this device. Use Bluetooth instead.",
+                    reason = ConnectionFailure.USB_UNAVAILABLE
+                )
+            )
             return false
         }
-        _connectionState.value = ConnectionState.Connecting("USB")
-        updateNotification()
+        setConnectionState(ConnectionState.Connecting("USB"))
 
         val attachedDevices = manager.deviceList.values.toList()
         if (attachedDevices.isEmpty()) {
-            _connectionState.value = ConnectionState.Error(
-                "No USB device detected. Use OTG, unlock Flipper, and reconnect cable."
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "No USB device detected. Use an OTG adapter, unlock the Flipper, and reconnect the cable.",
+                    reason = ConnectionFailure.USB_UNAVAILABLE
+                )
             )
-            updateNotification()
             return false
         }
 
         val driver = resolveUsbSerialDriver(manager, preferredDevice)
         if (driver == null) {
-            _connectionState.value = ConnectionState.Error(
-                "No compatible Flipper USB serial endpoint found. " +
-                        "Attached: ${describeUsbDeviceList(attachedDevices)}"
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "No compatible Flipper USB serial endpoint found. Attached: " +
+                            describeUsbDeviceList(attachedDevices),
+                    reason = ConnectionFailure.USB_UNAVAILABLE
+                )
             )
-            updateNotification()
             return false
         }
         val device = driver.device
 
         if (!ensureUsbPermission(manager, device)) {
-            _connectionState.value = ConnectionState.Error("USB permission denied for ${resolveUsbDeviceName(device)}")
-            updateNotification()
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "USB permission was not granted for ${resolveUsbDeviceName(device)}. " +
+                            "Accept the system prompt and retry.",
+                    reason = ConnectionFailure.USB_PERMISSION_DENIED
+                )
+            )
             return false
         }
 
         val connection = manager.openDevice(device)
         if (connection == null) {
-            _connectionState.value = ConnectionState.Error("Failed to open USB device")
-            updateNotification()
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "The Flipper USB device could not be opened. Reconnect the cable and retry.",
+                    reason = ConnectionFailure.USB_UNAVAILABLE
+                )
+            )
             return false
         }
 
         val port = driver.ports.firstOrNull()
         if (port == null) {
             runCatching { connection.close() }
-            _connectionState.value = ConnectionState.Error("USB serial port unavailable on device")
-            updateNotification()
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "The Flipper USB device exposes no serial port. Use Bluetooth instead.",
+                    reason = ConnectionFailure.USB_UNAVAILABLE
+                )
+            )
+            return false
+        }
+
+        if (!sessionRequested) {
+            runCatching { connection.close() }
             return false
         }
 
@@ -579,6 +1238,9 @@ class FlipperBleService : Service() {
             runCatching { port.setRTS(true) }
             primeUsbRpcSession(port)
 
+            // Close any late BLE connection that completed while the USB port was
+            // opening; exactly one transport may own the protocol.
+            teardownBleTransport(clearRequestedDevice = true)
             usbSerialDriver = driver
             usbSerialPort = port
             usbDeviceConnection = connection
@@ -594,12 +1256,15 @@ class FlipperBleService : Service() {
                 rssi = 0,
                 isConfirmedFlipper = true
             )
-            _connectionState.value = ConnectionState.Connected("$deviceName (USB)")
-            updateNotification()
+            setConnectionState(ConnectionState.Connected("$deviceName (USB)"))
+            connectedSinceMs = System.currentTimeMillis()
+            updateConnectionHealth(force = true)
 
             serviceScope.launch {
-                validateUsbBaudWithRpcProbe(port)
-                flipperProtocol.probeCliAvailability(force = true)
+                runCatching {
+                    validateUsbBaudWithRpcProbe(port)
+                    flipperProtocol.probeCliAvailability(force = true)
+                }.onFailure { Log.w(TAG, "USB post-connect probe failed: ${it.message}") }
             }
             true
         } catch (t: Throwable) {
@@ -611,10 +1276,13 @@ class FlipperBleService : Service() {
             connectedUsbDevice = null
             currentUsbBaudRate = null
             activeTransport = CommandTransport.NONE
-            _connectionState.value = ConnectionState.Error(
-                "USB connect failed: ${t.message ?: t::class.java.simpleName}"
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "USB connect failed: ${t.message ?: t::class.java.simpleName}. " +
+                            "Reconnect the cable or use Bluetooth.",
+                    reason = ConnectionFailure.USB_UNAVAILABLE
+                )
             )
-            updateNotification()
             false
         }
     }
@@ -730,15 +1398,33 @@ class FlipperBleService : Service() {
             usbPermissionPendingIntentFlags()
         )
         val deferred = CompletableDeferred<Boolean>()
-        pendingUsbPermissionRequest?.cancel()
+        // Superseded requests complete as denied instead of throwing into the
+        // connect coroutine.
+        pendingUsbPermissionRequest?.let { previous ->
+            if (!previous.isCompleted) previous.complete(false)
+        }
         pendingUsbPermissionRequest = deferred
-        manager.requestPermission(device, pendingIntent)
-        return withTimeoutOrNull(USB_PERMISSION_TIMEOUT_MS) {
+        val requested = runCatching {
+            manager.requestPermission(device, pendingIntent)
+        }.isSuccess
+        if (!requested) {
+            if (pendingUsbPermissionRequest === deferred) {
+                pendingUsbPermissionRequest = null
+            }
+            return false
+        }
+        val granted = withTimeoutOrNull(USB_PERMISSION_TIMEOUT_MS) {
             deferred.await()
         } ?: false
+        if (pendingUsbPermissionRequest === deferred) {
+            pendingUsbPermissionRequest = null
+        }
+        return granted
     }
 
     private fun usbPermissionPendingIntentFlags(): Int {
+        // The USB system service adds EXTRA_PERMISSION_GRANTED to this intent, so
+        // the PendingIntent must stay mutable; the notification intent does not.
         val updateFlag = PendingIntent.FLAG_UPDATE_CURRENT
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             updateFlag or PendingIntent.FLAG_MUTABLE
@@ -829,6 +1515,7 @@ class FlipperBleService : Service() {
                     val bytesRead = port.read(readBuffer, USB_READ_TIMEOUT_MS.toInt())
                     if (bytesRead > 0) {
                         val payload = readBuffer.copyOf(bytesRead)
+                        markPacketReceived()
                         completePendingOperation(payload)
                         flipperProtocol.processIncomingData(payload)
                     }
@@ -838,8 +1525,12 @@ class FlipperBleService : Service() {
                     Log.w(TAG, "USB read failed: ${t.message}")
                     disconnectUsbTransport(
                         setState = true,
-                        errorMessage = "USB transport error: ${t.message ?: "read failed"}"
+                        errorMessage = "USB transport error: ${t.message ?: "read failed"}. " +
+                                "Reconnect the cable or use Bluetooth.",
+                        failure = ConnectionFailure.TRANSPORT_UNAVAILABLE
                     )
+                    sessionRequested = false
+                    scheduleIdleShutdown()
                     break
                 }
             }
@@ -848,27 +1539,109 @@ class FlipperBleService : Service() {
 
     private fun markBleActivity() {
         lastBleActivityAtMs = System.currentTimeMillis()
+        updateConnectionHealth()
     }
 
-    private fun startBleKeepalive() {
-        stopBleKeepalive()
-        bleKeepaliveJob = serviceScope.launch {
+    private fun markPacketReceived() {
+        val now = System.currentTimeMillis()
+        lastBleActivityAtMs = now
+        lastPacketAtMs = now
+        updateConnectionHealth()
+    }
+
+    /**
+     * Starts the BLE connection watchdog.
+     *
+     * One loop handles liveness detection and keep-alive traffic:
+     *  - probes the link (overflow read / RSSI) when it has been quiet;
+     *  - treats [SILENT_DROP_TIMEOUT_MS] without any callback as a silent drop;
+     *  - refreshes [connectionHealth] so the UI can show link age and reconnect count.
+     *
+     * The job is cancelled on disconnect, stop, transport switch, and service
+     * destruction; it never outlives a BLE session.
+     */
+    private fun startConnectionWatchdog() {
+        stopConnectionWatchdog()
+        connectionWatchdogJob = serviceScope.launch {
             while (isActive) {
-                delay(BLE_KEEPALIVE_INTERVAL_MS)
+                delay(CONNECTION_WATCHDOG_TICK_MS)
                 if (activeTransport != CommandTransport.BLE) continue
+                if (!sessionRequested) continue
                 if (_connectionState.value !is ConnectionState.Connected) continue
                 if (!notificationsReady || !gattLinkConnected) continue
 
-                val idleForMs = System.currentTimeMillis() - lastBleActivityAtMs
-                if (idleForMs < BLE_KEEPALIVE_IDLE_THRESHOLD_MS) continue
-                sendBleKeepaliveProbe()
+                if (!hasBluetoothPermissions()) {
+                    setConnectionState(
+                        ConnectionState.Error(
+                            message = "Nearby devices permission was revoked. Grant it and reconnect.",
+                            reason = ConnectionFailure.PERMISSION_DENIED
+                        )
+                    )
+                    sessionRequested = false
+                    connectionWatchdogJob = null
+                    teardownBleTransport(clearRequestedDevice = true)
+                    scheduleIdleShutdown()
+                    return@launch
+                }
+
+                val now = System.currentTimeMillis()
+                val lastActivity = if (lastBleActivityAtMs > 0L) {
+                    lastBleActivityAtMs
+                } else {
+                    connectedSinceMs ?: now
+                }
+                val silentForMs = now - lastActivity
+                updateConnectionHealth(force = true)
+
+                if (silentForMs >= SILENT_DROP_TIMEOUT_MS) {
+                    Log.w(TAG, "Silent BLE drop detected after ${silentForMs}ms without traffic")
+                    handleSilentBleDrop()
+                    return@launch
+                }
+
+                requestHighPriorityConnectionIfNeeded()
+                if (silentForMs >= BLE_KEEPALIVE_IDLE_THRESHOLD_MS) {
+                    sendBleKeepaliveProbe()
+                }
             }
         }
     }
 
-    private fun stopBleKeepalive() {
-        bleKeepaliveJob?.cancel()
-        bleKeepaliveJob = null
+    private fun stopConnectionWatchdog() {
+        connectionWatchdogJob?.cancel()
+        connectionWatchdogJob = null
+    }
+
+    private fun handleSilentBleDrop() {
+        // A user-initiated disconnect may race with this tick; stay quiet then.
+        if (!sessionRequested) return
+        failPendingWriteAck()
+        flipperProtocol.onConnectionReset()
+        // Clear the handle before teardown: teardown cancels this job, and the
+        // remaining reconnect scheduling must still run.
+        connectionWatchdogJob = null
+        teardownBleTransport(clearRequestedDevice = false)
+        _connectedDevice.value = null
+        connectedSinceMs = null
+        if (!scheduleReconnect(reason = "BLE link went silent")) {
+            // A series may already be in flight; let it own the state.
+            if (reconnectJob?.isActive == true) return
+            sessionRequested = false
+            val detail = when {
+                !hasBluetoothPermissions() ->
+                    "Nearby devices permission is missing. Grant it, then reconnect."
+                runCatching { bluetoothAdapter?.isEnabled != true }.getOrDefault(true) ->
+                    "Bluetooth is off. Turn it on, then reconnect."
+                else -> "Auto-reconnect gave up. Move closer, keep the Flipper unlocked, then reconnect."
+            }
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "The Flipper stopped responding for ${SILENT_DROP_TIMEOUT_MS / 1000}s. $detail",
+                    reason = ConnectionFailure.SILENT_DROP
+                )
+            )
+            scheduleIdleShutdown()
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -877,16 +1650,15 @@ class FlipperBleService : Service() {
         val gatt = bluetoothGatt ?: return
         if (!isCurrentGatt(gatt)) return
 
-        val sent = when {
+        // Do not mark activity here: the read callback is what proves the link
+        // is alive, and a dead link still accepts the queued request.
+        when {
             serialOverflowCharacteristic != null -> {
-                gatt.readCharacteristic(serialOverflowCharacteristic)
+                runCatching { gatt.readCharacteristic(serialOverflowCharacteristic) }
             }
             else -> {
-                gatt.readRemoteRssi()
+                runCatching { gatt.readRemoteRssi() }
             }
-        }
-        if (sent) {
-            markBleActivity()
         }
     }
 
@@ -907,30 +1679,70 @@ class FlipperBleService : Service() {
         }
     }
 
-    @SuppressLint("MissingPermission")
+    /**
+     * Disconnects the active transport and closes the session.
+     *
+     * Safe from any thread: teardown is dispatched to the service scope and all
+     * pending watchdog/reconnect jobs are cancelled first.
+     */
     fun disconnect() {
+        sessionRequested = false
+        cancelPendingReconnect()
+        cancelConnectAttemptTimeout()
+        serviceScope.launch {
+            disconnectInternal()
+            scheduleIdleShutdown()
+        }
+    }
+
+    private fun disconnectInternal() {
         failPendingWriteAck()
         flipperProtocol.onConnectionReset()
-        stopBleKeepalive()
-        disconnectBleTransport()
+        stopScanInternal(updateState = false)
+        stopConnectionWatchdog()
+        cancelConnectAttemptTimeout()
+        teardownBleTransport(clearRequestedDevice = true)
         disconnectUsbTransport(setState = false)
         _connectedDevice.value = null
         activeTransport = CommandTransport.NONE
+        sessionRequested = false
+        connectedSinceMs = null
         if (_connectionState.value !is ConnectionState.Error) {
-            _connectionState.value = ConnectionState.Disconnected
+            setConnectionState(ConnectionState.Disconnected)
+        } else {
+            updateConnectionHealth(force = true)
+            updateNotification()
         }
-        updateNotification()
+    }
+
+    private fun teardownAllTransports(updateState: Boolean, clearRequestedDevice: Boolean) {
+        stopConnectionWatchdog()
+        cancelConnectAttemptTimeout()
+        teardownBleTransport(clearRequestedDevice = clearRequestedDevice)
+        disconnectUsbTransport(setState = false)
+        _connectedDevice.value = null
+        connectedSinceMs = null
+        activeTransport = CommandTransport.NONE
+        if (updateState) {
+            setConnectionState(ConnectionState.Disconnected)
+        } else {
+            updateConnectionHealth(force = true)
+        }
     }
 
     @SuppressLint("MissingPermission")
-    private fun disconnectBleTransport() {
-        bluetoothGatt?.let { gatt ->
-            if (hasBluetoothPermissions()) {
-                runCatching { gatt.disconnect() }
-                runCatching { gatt.close() }
-            }
-        }
+    private fun teardownBleTransport(clearRequestedDevice: Boolean) {
+        stopConnectionWatchdog()
+        cancelConnectAttemptTimeout()
+        gattLinkConnected = false
+        val gatt = bluetoothGatt
         bluetoothGatt = null
+        if (gatt != null) {
+            // Attempt cleanup even when the permission was revoked so the GATT
+            // handle cannot leak; both calls are safe to run twice.
+            runCatching { gatt.disconnect() }
+            runCatching { gatt.close() }
+        }
         serialCharacteristic = null
         serialRxCharacteristic = null
         serialServiceUuid = null
@@ -938,24 +1750,28 @@ class FlipperBleService : Service() {
         serialResetCharacteristic = null
         remainingSerialBufferBytes = null
         pendingConnectionName = null
-        lastRequestedDeviceAddress = null
-        lastRequestedDeviceName = null
-        lastRequestedBluetoothDevice = null
-        reconnectAttemptCount = 0
-        gattLinkConnected = false
+        if (clearRequestedDevice) {
+            lastRequestedDeviceAddress = null
+            lastRequestedDeviceName = null
+            lastRequestedBluetoothDevice = null
+            reconnectAttemptCount = 0
+        }
         pendingConnectedDevice = null
         notificationsReady = false
         negotiatedMtu = DEFAULT_ATT_MTU
         lastBleActivityAtMs = 0L
         lastBlePriorityRequestAtMs = 0L
+        connectedSinceMs = null
         if (activeTransport == CommandTransport.BLE) {
             activeTransport = CommandTransport.NONE
         }
+        updateConnectionHealth(force = true)
     }
 
     private fun disconnectUsbTransport(
         setState: Boolean,
-        errorMessage: String? = null
+        errorMessage: String? = null,
+        failure: ConnectionFailure = ConnectionFailure.UNKNOWN
     ) {
         usbReadJob?.cancel()
         usbReadJob = null
@@ -966,240 +1782,84 @@ class FlipperBleService : Service() {
         usbDeviceConnection = null
         connectedUsbDevice = null
         currentUsbBaudRate = null
-        pendingUsbPermissionRequest?.cancel()
+        pendingUsbPermissionRequest?.let { pending ->
+            if (!pending.isCompleted) pending.complete(false)
+        }
         pendingUsbPermissionRequest = null
         if (activeTransport == CommandTransport.USB) {
             activeTransport = CommandTransport.NONE
         }
+        flipperProtocol.onConnectionReset()
         if (setState) {
             _connectedDevice.value = null
-            _connectionState.value = if (!errorMessage.isNullOrBlank()) {
-                ConnectionState.Error(errorMessage)
-            } else {
-                ConnectionState.Disconnected
-            }
-            updateNotification()
-            flipperProtocol.onConnectionReset()
+            connectedSinceMs = null
+            setConnectionState(
+                if (!errorMessage.isNullOrBlank()) {
+                    ConnectionState.Error(errorMessage, failure)
+                } else {
+                    ConnectionState.Disconnected
+                }
+            )
+        } else {
+            updateConnectionHealth(force = true)
+        }
+    }
+
+    /**
+     * Guards every BluetoothGattCallback entry point. These methods run on a
+     * Binder thread; an escaping exception kills the process instead of just
+     * failing the connection, so each callback delegates into a guarded handler.
+     */
+    private fun runGattCallback(name: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            Log.e(TAG, "GATT callback $name failed", t)
         }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
-        @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            if (!isCurrentGatt(gatt)) {
-                Log.d(
-                    TAG,
-                    "Ignoring stale onConnectionStateChange addr=${gatt.device.address} " +
-                            "status=${describeGattStatus(status)} state=$newState"
-                )
-                if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    runCatching { gatt.close() }
-                }
-                return
-            }
-            Log.d(
-                TAG,
-                "onConnectionStateChange addr=${gatt.device.address} " +
-                        "status=${describeGattStatus(status)} state=$newState"
-            )
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    reconnectAttemptCount = 0
-                    gattLinkConnected = true
-                    markBleActivity()
-                    lastRequestedBluetoothDevice = gatt.device
-                    lastRequestedDeviceAddress = gatt.device.address
-                    if (hasBluetoothPermissions()) {
-                        runCatching {
-                            gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                        }
-                        lastBlePriorityRequestAtMs = System.currentTimeMillis()
-                        gatt.requestMtu(REQUESTED_ATT_MTU)
-                        gatt.discoverServices()
-                    }
-                }
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    failPendingWriteAck()
-                    flipperProtocol.onConnectionReset()
-                    gattLinkConnected = false
-                    notificationsReady = false
-                    pendingConnectedDevice = null
-                    negotiatedMtu = DEFAULT_ATT_MTU
-                    serialServiceUuid = null
-                    serialOverflowCharacteristic = null
-                    serialResetCharacteristic = null
-                    stopBleKeepalive()
-                    remainingSerialBufferBytes = null
-                    if (bluetoothGatt === gatt) {
-                        bluetoothGatt = null
-                    }
-                    runCatching { gatt.close() }
-                    _connectedDevice.value = null
-                    if (activeTransport == CommandTransport.BLE) {
-                        activeTransport = CommandTransport.NONE
-                    }
-                    val autoReconnectScheduled = scheduleAutoReconnectIfEligible(status)
-                    _connectionState.value = if (autoReconnectScheduled) {
-                        val deviceName = lastRequestedDeviceName
-                            ?: pendingConnectionName
-                            ?: DEFAULT_FLIPPER_NAME
-                        ConnectionState.Connecting("$deviceName (reconnect ${reconnectAttemptCount}/${MAX_TIMEOUT_RECONNECT_ATTEMPTS})")
-                    } else if (status != BluetoothGatt.GATT_SUCCESS) {
-                        val statusText = describeGattStatus(status)
-                        val reasonHint = when (status) {
-                            GATT_STATUS_CONN_TERMINATE_PEER_USER ->
-                                "Flipper closed the session. Keep the Flipper Bluetooth app open and close other apps connected to it."
-                            GATT_STATUS_GENERIC_ERROR ->
-                                "Android BLE stack error. Toggle Bluetooth off/on and reconnect."
-                            else ->
-                                "Keep Flipper close, disable competing Flipper apps, and retry connect."
-                        }
-                        ConnectionState.Error("BLE disconnected ($statusText). $reasonHint")
-                    } else {
-                        ConnectionState.Disconnected
-                    }
-                    updateNotification()
-                }
-            }
-        }
-
-        @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (!isCurrentGatt(gatt)) return
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.w(TAG, "Service discovery failed status=${describeGattStatus(status)}")
-                _connectionState.value = ConnectionState.Error("Service discovery failed")
-                return
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) =
+            runGattCallback("onConnectionStateChange") {
+                handleConnectionStateChange(gatt, status, newState)
             }
 
-            val serialService = resolveSerialService(gatt)
-            if (serialService == null) {
-                val discoveredServices = gatt.services
-                    ?.joinToString(limit = 8) { it.uuid.toString() }
-                    .orEmpty()
-                _connectionState.value = ConnectionState.Error(
-                    "Flipper serial service not found. Exit Bluetooth Remote/Control mode on Flipper and retry. " +
-                            "Services: $discoveredServices"
-                )
-                return
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) =
+            runGattCallback("onServicesDiscovered") {
+                handleServicesDiscovered(gatt, status)
             }
-
-            val resolvedWrite = resolveWriteCharacteristic(serialService)
-            val resolvedNotify = resolveNotifyCharacteristic(serialService, resolvedWrite)
-            serialCharacteristic = resolvedWrite
-            serialRxCharacteristic = resolvedNotify
-            serialServiceUuid = serialService.uuid
-            serialOverflowCharacteristic = serialService.getCharacteristic(FLIPPER_SERIAL_OVERFLOW_UUID)
-            serialResetCharacteristic = serialService.getCharacteristic(FLIPPER_SERIAL_RESET_UUID)
-            remainingSerialBufferBytes = null
-            if (serialCharacteristic == null || serialRxCharacteristic == null) {
-                _connectionState.value = ConnectionState.Error("Flipper serial characteristics not usable")
-                return
-            }
-
-            val deviceName = resolveConnectedDeviceName(gatt.device.address, gatt.device.name)
-            val device = FlipperDevice(
-                address = gatt.device.address,
-                name = deviceName,
-                rssi = 0
-            )
-            pendingConnectedDevice = device
-            notificationsReady = false
-
-            // Enable notifications on RX characteristic and wait for descriptor write completion.
-            if (hasBluetoothPermissions()) {
-                val rx = serialRxCharacteristic ?: run {
-                    _connectionState.value = ConnectionState.Error("Flipper RX characteristic unavailable")
-                    return
-                }
-                gatt.setCharacteristicNotification(rx, true)
-                val descriptor = rx.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)
-                if (descriptor != null) {
-                    descriptor.value = if (supportsNotification(rx)) {
-                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    } else if (supportsIndication(rx)) {
-                        BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-                    } else {
-                        BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-                    }
-                    val started = gatt.writeDescriptor(descriptor)
-                    if (!started) {
-                        pendingConnectedDevice = null
-                        _connectionState.value = ConnectionState.Error("Failed to enable Flipper notifications")
-                    }
-                    return
-                }
-            }
-
-            // Descriptor not available; continue with best-effort connection readiness.
-            notificationsReady = true
-            finalizeConnectedState(device)
-        }
 
         override fun onDescriptorWrite(
             gatt: BluetoothGatt,
             descriptor: BluetoothGattDescriptor,
             status: Int
-        ) {
-            if (!isCurrentGatt(gatt)) return
-            if (descriptor.uuid != CLIENT_CHARACTERISTIC_CONFIG) return
-            if (descriptor.characteristic?.uuid != serialRxCharacteristic?.uuid) return
-
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                pendingConnectedDevice = null
-                notificationsReady = false
-                _connectionState.value = ConnectionState.Error("Failed to enable Flipper notifications")
-                updateNotification()
-                return
-            }
-
-            notificationsReady = true
-            val device = pendingConnectedDevice
-            if (device != null) {
-                finalizeConnectedState(device)
-            }
+        ) = runGattCallback("onDescriptorWrite") {
+            handleDescriptorWrite(gatt, descriptor, status)
         }
 
-        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            if (!isCurrentGatt(gatt)) return
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                negotiatedMtu = mtu.coerceIn(DEFAULT_ATT_MTU, REQUESTED_ATT_MTU)
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) =
+            runGattCallback("onMtuChanged") {
+                if (isCurrentGatt(gatt) && status == BluetoothGatt.GATT_SUCCESS) {
+                    negotiatedMtu = mtu.coerceIn(DEFAULT_ATT_MTU, REQUESTED_ATT_MTU)
+                }
             }
-        }
 
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
-        ) {
-            if (!isCurrentGatt(gatt)) return
-            markBleActivity()
-            if (characteristic.uuid == serialOverflowCharacteristic?.uuid) {
-                updateOverflowCapacityFromBytes(value)
-                return
-            }
-            if (shouldHandleIncomingCharacteristic(characteristic)) {
-                completePendingOperation(value)
-                flipperProtocol.processIncomingData(value)
-            }
+        ) = runGattCallback("onCharacteristicChanged") {
+            handleCharacteristicChanged(gatt, characteristic, value)
         }
 
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
-        ) {
-            if (!isCurrentGatt(gatt)) return
-            if (characteristic.uuid == serialOverflowCharacteristic?.uuid) {
-                characteristic.value?.let { updateOverflowCapacityFromBytes(it) }
-                return
-            }
-            if (shouldHandleIncomingCharacteristic(characteristic)) {
-                characteristic.value?.let { data ->
-                    completePendingOperation(data)
-                    flipperProtocol.processIncomingData(data)
-                }
-            }
+        ) = runGattCallback("onCharacteristicChanged(legacy)") {
+            handleCharacteristicChangedLegacy(gatt, characteristic)
         }
 
         override fun onCharacteristicRead(
@@ -1207,14 +1867,8 @@ class FlipperBleService : Service() {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
             status: Int
-        ) {
-            if (!isCurrentGatt(gatt)) return
-            if (status == BluetoothGatt.GATT_SUCCESS &&
-                characteristic.uuid == serialOverflowCharacteristic?.uuid
-            ) {
-                markBleActivity()
-                updateOverflowCapacityFromBytes(value)
-            }
+        ) = runGattCallback("onCharacteristicRead") {
+            handleCharacteristicRead(gatt, characteristic, value, status)
         }
 
         @Deprecated("Deprecated in API 33")
@@ -1222,37 +1876,421 @@ class FlipperBleService : Service() {
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             status: Int
-        ) {
-            if (!isCurrentGatt(gatt)) return
-            if (status == BluetoothGatt.GATT_SUCCESS &&
-                characteristic.uuid == serialOverflowCharacteristic?.uuid
-            ) {
-                characteristic.value?.let { updateOverflowCapacityFromBytes(it) }
-            }
+        ) = runGattCallback("onCharacteristicRead(legacy)") {
+            handleCharacteristicReadLegacy(gatt, characteristic, status)
         }
 
         override fun onCharacteristicWrite(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             status: Int
-        ) {
-            if (!isCurrentGatt(gatt)) return
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                markBleActivity()
-            }
-            pendingWriteAck?.let { ack ->
-                if (!ack.isCompleted) {
-                    ack.complete(status == BluetoothGatt.GATT_SUCCESS)
+        ) = runGattCallback("onCharacteristicWrite") {
+            handleCharacteristicWrite(gatt, status)
+        }
+
+        override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) =
+            runGattCallback("onReadRemoteRssi") {
+                if (isCurrentGatt(gatt) && status == BluetoothGatt.GATT_SUCCESS) {
+                    markBleActivity()
                 }
             }
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                flipperProtocol.onWriteComplete()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun handleConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+        if (!isCurrentGatt(gatt)) {
+            Log.d(
+                TAG,
+                "Ignoring stale onConnectionStateChange addr=${gatt.device.address} " +
+                        "status=${describeGattStatus(status)} state=$newState"
+            )
+            if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                runCatching { gatt.close() }
+            }
+            return
+        }
+        Log.d(
+            TAG,
+            "onConnectionStateChange addr=${gatt.device.address} " +
+                    "status=${describeGattStatus(status)} state=$newState"
+        )
+        when (newState) {
+            BluetoothProfile.STATE_CONNECTED -> {
+                if (!sessionRequested || activeTransport == CommandTransport.USB) {
+                    // The user disconnected, or USB won the race, while
+                    // connectGatt() was in flight.
+                    runCatching { gatt.disconnect() }
+                    runCatching { gatt.close() }
+                    return
+                }
+                cancelConnectAttemptTimeout()
+                cancelPendingReconnect()
+                reconnectAttemptCount = 0
+                gattLinkConnected = true
+                connectedSinceMs = System.currentTimeMillis()
+                markBleActivity()
+                lastRequestedBluetoothDevice = gatt.device
+                lastRequestedDeviceAddress = gatt.device.address
+                if (!hasBluetoothPermissions()) {
+                    handleBleSetupFailure(
+                        message = "Nearby devices permission was revoked while connecting. Grant it and retry.",
+                        reason = ConnectionFailure.PERMISSION_DENIED,
+                        retry = false
+                    )
+                    return
+                }
+                runCatching {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                }
+                lastBlePriorityRequestAtMs = System.currentTimeMillis()
+                runCatching { gatt.requestMtu(REQUESTED_ATT_MTU) }
+                runCatching { gatt.discoverServices() }
+            }
+            BluetoothProfile.STATE_DISCONNECTED -> handleGattDisconnected(gatt, status)
+        }
+    }
+
+    private fun handleGattDisconnected(gatt: BluetoothGatt, status: Int) {
+        failPendingWriteAck()
+        flipperProtocol.onConnectionReset()
+        gattLinkConnected = false
+        notificationsReady = false
+        pendingConnectedDevice = null
+        negotiatedMtu = DEFAULT_ATT_MTU
+        serialCharacteristic = null
+        serialRxCharacteristic = null
+        serialServiceUuid = null
+        serialOverflowCharacteristic = null
+        serialResetCharacteristic = null
+        stopConnectionWatchdog()
+        cancelConnectAttemptTimeout()
+        remainingSerialBufferBytes = null
+        lastBleActivityAtMs = 0L
+        lastBlePriorityRequestAtMs = 0L
+        if (bluetoothGatt === gatt) {
+            bluetoothGatt = null
+        }
+        runCatching { gatt.close() }
+        _connectedDevice.value = null
+        connectedSinceMs = null
+        if (activeTransport == CommandTransport.BLE) {
+            activeTransport = CommandTransport.NONE
+        }
+
+        if (!sessionRequested) {
+            // Local disconnect in progress: never surface its GATT status as an
+            // error to the user.
+            setConnectionState(ConnectionState.Disconnected)
+            scheduleIdleShutdown()
+            return
+        }
+
+        val scheduled = scheduleReconnect(reason = "GATT disconnected (${describeGattStatus(status)})")
+        if (scheduled || reconnectJob?.isActive == true) {
+            val deviceName = lastRequestedDeviceName ?: pendingConnectionName ?: DEFAULT_FLIPPER_NAME
+            setConnectionState(
+                ConnectionState.Connecting(
+                    "$deviceName (reconnect $reconnectAttemptCount/$MAX_RECONNECT_ATTEMPTS)"
+                )
+            )
+            return
+        }
+
+        if (!hasBluetoothPermissions()) {
+            sessionRequested = false
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Nearby devices permission is required to keep the connection. " +
+                            "Grant it, then reconnect.",
+                    reason = ConnectionFailure.PERMISSION_DENIED
+                )
+            )
+            scheduleIdleShutdown()
+            return
+        }
+
+        // If the radio is off, keep the user's session intent so the Bluetooth
+        // state receiver can resume with a fresh backoff budget when it returns.
+        val radioOff = runCatching {
+            bluetoothAdapter?.isEnabled != true
+        }.getOrDefault(true)
+        if (radioOff) {
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "Bluetooth is off. Turn Bluetooth on, unlock the Flipper, then reconnect.",
+                    reason = ConnectionFailure.BLUETOOTH_DISABLED
+                )
+            )
+            scheduleIdleShutdown()
+            return
+        }
+
+        sessionRequested = false
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            val statusText = describeGattStatus(status)
+            val reasonHint = when (status) {
+                GATT_STATUS_CONN_TERMINATE_PEER_USER ->
+                    "The Flipper closed the session. Keep its Bluetooth app open and close competing Flipper apps."
+                GATT_STATUS_GENERIC_ERROR ->
+                    "Android BLE stack error. Toggle Bluetooth off/on and reconnect."
+                else ->
+                    "Keep the Flipper close and unlocked, close competing Flipper apps, then reconnect."
+            }
+            val exhaustedHint = if (reconnectAttemptCount >= MAX_RECONNECT_ATTEMPTS) {
+                " Auto-reconnect gave up after $reconnectAttemptCount attempts."
             } else {
-                flipperProtocol.onWriteError(status)
+                ""
+            }
+            setConnectionState(
+                ConnectionState.Error(
+                    message = "BLE disconnected ($statusText). $reasonHint$exhaustedHint",
+                    reason = when (status) {
+                        GATT_STATUS_CONN_TERMINATE_PEER_USER -> ConnectionFailure.PROTOCOL_ERROR
+                        GATT_STATUS_CONN_TIMEOUT -> ConnectionFailure.CONNECTION_TIMEOUT
+                        else -> ConnectionFailure.TRANSPORT_UNAVAILABLE
+                    }
+                )
+            )
+        } else {
+            setConnectionState(ConnectionState.Disconnected)
+        }
+        scheduleIdleShutdown()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun handleServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+        if (!isCurrentGatt(gatt)) return
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            Log.w(TAG, "Service discovery failed status=${describeGattStatus(status)}")
+            handleBleSetupFailure(
+                message = "Android could not read the Flipper services (${describeGattStatus(status)}). " +
+                        "Move closer, keep the Flipper unlocked, and retry.",
+                reason = ConnectionFailure.SERVICE_DISCOVERY_FAILED,
+                retry = true
+            )
+            return
+        }
+
+        val serialService = resolveSerialService(gatt)
+        if (serialService == null) {
+            val discoveredServices = gatt.services
+                ?.joinToString(limit = 8) { it.uuid.toString() }
+                .orEmpty()
+            handleBleSetupFailure(
+                message = "Flipper serial service not found. Leave Bluetooth Remote/Control mode on the " +
+                        "Flipper, then retry. Services: $discoveredServices",
+                reason = ConnectionFailure.SERVICE_DISCOVERY_FAILED,
+                retry = false
+            )
+            return
+        }
+
+        val resolvedWrite = resolveWriteCharacteristic(serialService)
+        val resolvedNotify = resolveNotifyCharacteristic(serialService, resolvedWrite)
+        serialCharacteristic = resolvedWrite
+        serialRxCharacteristic = resolvedNotify
+        serialServiceUuid = serialService.uuid
+        serialOverflowCharacteristic = serialService.getCharacteristic(FLIPPER_SERIAL_OVERFLOW_UUID)
+        serialResetCharacteristic = serialService.getCharacteristic(FLIPPER_SERIAL_RESET_UUID)
+        remainingSerialBufferBytes = null
+        if (serialCharacteristic == null || serialRxCharacteristic == null) {
+            handleBleSetupFailure(
+                message = "The Flipper serial characteristics are not usable on this firmware. " +
+                        "Update the Flipper firmware, then reconnect.",
+                reason = ConnectionFailure.TRANSPORT_UNAVAILABLE,
+                retry = false
+            )
+            return
+        }
+
+        val deviceName = resolveConnectedDeviceName(gatt.device.address, gatt.device.name)
+        val device = FlipperDevice(
+            address = gatt.device.address,
+            name = deviceName,
+            rssi = 0
+        )
+        pendingConnectedDevice = device
+        notificationsReady = false
+
+        if (!hasBluetoothPermissions()) {
+            handleBleSetupFailure(
+                message = "Nearby devices permission was revoked while connecting. Grant it and retry.",
+                reason = ConnectionFailure.PERMISSION_DENIED,
+                retry = false
+            )
+            return
+        }
+
+        // Enable notifications on the RX characteristic and wait for the
+        // descriptor write callback before declaring the link connected.
+        val rx = serialRxCharacteristic
+        if (rx == null) {
+            handleBleSetupFailure(
+                message = "The Flipper RX characteristic is unavailable. Reconnect to retry.",
+                reason = ConnectionFailure.TRANSPORT_UNAVAILABLE,
+                retry = true
+            )
+            return
+        }
+        gatt.setCharacteristicNotification(rx, true)
+        val descriptor = rx.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG)
+        if (descriptor != null) {
+            descriptor.value = if (supportsNotification(rx)) {
+                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            } else if (supportsIndication(rx)) {
+                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+            } else {
+                BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+            }
+            val started = gatt.writeDescriptor(descriptor)
+            if (!started) {
+                handleBleSetupFailure(
+                    message = "Could not enable Flipper notifications. Reconnect to retry.",
+                    reason = ConnectionFailure.TRANSPORT_UNAVAILABLE,
+                    retry = true
+                )
+            }
+            return
+        }
+
+        // Descriptor not available; continue with best-effort connection readiness.
+        notificationsReady = true
+        finalizeConnectedState(device)
+    }
+
+    private fun handleDescriptorWrite(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        status: Int
+    ) {
+        if (!isCurrentGatt(gatt)) return
+        if (descriptor.uuid != CLIENT_CHARACTERISTIC_CONFIG) return
+        if (descriptor.characteristic?.uuid != serialRxCharacteristic?.uuid) return
+
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            pendingConnectedDevice = null
+            notificationsReady = false
+            handleBleSetupFailure(
+                message = "Could not enable Flipper notifications (${describeGattStatus(status)}). " +
+                        "Reconnect to retry.",
+                reason = ConnectionFailure.TRANSPORT_UNAVAILABLE,
+                retry = true
+            )
+            return
+        }
+
+        notificationsReady = true
+        val device = pendingConnectedDevice
+        if (device != null) {
+            finalizeConnectedState(device)
+        }
+    }
+
+    private fun handleBleSetupFailure(
+        message: String,
+        reason: ConnectionFailure,
+        retry: Boolean
+    ) {
+        if (!sessionRequested) {
+            teardownBleTransport(clearRequestedDevice = true)
+            return
+        }
+        Log.w(TAG, "BLE setup failed: $message (retry=$retry)")
+        failPendingWriteAck()
+        flipperProtocol.onConnectionReset()
+        teardownBleTransport(clearRequestedDevice = false)
+        _connectedDevice.value = null
+        connectedSinceMs = null
+        val scheduled = retry && scheduleReconnect(reason = message)
+        if (!scheduled) {
+            // Do not clobber a reconnect series that is already in flight.
+            if (reconnectJob?.isActive == true) return
+            sessionRequested = false
+            setConnectionState(ConnectionState.Error(message, reason))
+            scheduleIdleShutdown()
+        }
+    }
+
+    private fun handleCharacteristicChanged(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray
+    ) {
+        if (!isCurrentGatt(gatt)) return
+        markPacketReceived()
+        if (characteristic.uuid == serialOverflowCharacteristic?.uuid) {
+            updateOverflowCapacityFromBytes(value)
+            return
+        }
+        if (shouldHandleIncomingCharacteristic(characteristic)) {
+            completePendingOperation(value)
+            flipperProtocol.processIncomingData(value)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun handleCharacteristicChangedLegacy(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic
+    ) {
+        if (!isCurrentGatt(gatt)) return
+        markPacketReceived()
+        if (characteristic.uuid == serialOverflowCharacteristic?.uuid) {
+            characteristic.value?.let { updateOverflowCapacityFromBytes(it) }
+            return
+        }
+        if (shouldHandleIncomingCharacteristic(characteristic)) {
+            characteristic.value?.let { data ->
+                completePendingOperation(data)
+                flipperProtocol.processIncomingData(data)
             }
         }
     }
 
+    private fun handleCharacteristicRead(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        status: Int
+    ) {
+        if (!isCurrentGatt(gatt)) return
+        if (status != BluetoothGatt.GATT_SUCCESS) return
+        markPacketReceived()
+        if (characteristic.uuid == serialOverflowCharacteristic?.uuid) {
+            updateOverflowCapacityFromBytes(value)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun handleCharacteristicReadLegacy(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        status: Int
+    ) {
+        if (!isCurrentGatt(gatt)) return
+        if (status != BluetoothGatt.GATT_SUCCESS) return
+        markPacketReceived()
+        if (characteristic.uuid == serialOverflowCharacteristic?.uuid) {
+            characteristic.value?.let { updateOverflowCapacityFromBytes(it) }
+        }
+    }
+
+    private fun handleCharacteristicWrite(gatt: BluetoothGatt, status: Int) {
+        if (!isCurrentGatt(gatt)) return
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            markBleActivity()
+        }
+        pendingWriteAck?.let { ack ->
+            if (!ack.isCompleted) {
+                ack.complete(status == BluetoothGatt.GATT_SUCCESS)
+            }
+        }
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            flipperProtocol.onWriteComplete()
+        } else {
+            flipperProtocol.onWriteError(status)
+        }
+    }
     // Data transmission
 
     @SuppressLint("MissingPermission")
@@ -1323,10 +2361,12 @@ class FlipperBleService : Service() {
             return false
         }
         if (!notificationsReady) {
-            // Descriptor callbacks can be delayed on some stacks; allow a short settle window.
-            repeat(NOTIFICATION_READY_WAIT_ATTEMPTS) {
-                if (notificationsReady) return@repeat
+            // Descriptor callbacks can be delayed on some stacks; allow a short
+            // settle window, but stop as soon as readiness flips.
+            var waited = 0
+            while (!notificationsReady && waited < NOTIFICATION_READY_WAIT_ATTEMPTS) {
                 delay(NOTIFICATION_READY_POLL_MS)
+                waited += 1
             }
             if (!notificationsReady) {
                 lastWriteFailureReason = "Notifications not ready"
@@ -1515,13 +2555,22 @@ class FlipperBleService : Service() {
         return bluetoothGatt === gatt
     }
 
+    /**
+     * Schedules one capped, cancellable reconnect series.
+     *
+     * Backoff is exponential (1s, 2s, 4s, 8s, 16s, capped at [RECONNECT_MAX_DELAY_MS])
+     * and is reset as soon as a connection is established. Only one series can
+     * run at a time, so callbacks, the watchdog and the UI cannot create a
+     * reconnect storm.
+     *
+     * @return true when a series was scheduled, false when it is not eligible
+     * (no requested session, radio off, permission missing, attempts exhausted).
+     */
     @SuppressLint("MissingPermission")
-    private fun scheduleAutoReconnectIfEligible(status: Int): Boolean {
-        val reconnectableStatus = status == GATT_STATUS_CONN_TIMEOUT ||
-                status == GATT_STATUS_CONN_TERMINATE_PEER_USER ||
-                status == GATT_STATUS_GENERIC_ERROR
-        if (!reconnectableStatus) return false
-        if (reconnectAttemptCount >= MAX_TIMEOUT_RECONNECT_ATTEMPTS) return false
+    private fun scheduleReconnect(reason: String): Boolean {
+        if (!sessionRequested) return false
+        if (reconnectJob?.isActive == true) return false
+        if (reconnectAttemptCount >= MAX_RECONNECT_ATTEMPTS) return false
         if (!hasBluetoothPermissions()) return false
         if (bluetoothAdapter?.isEnabled != true) return false
 
@@ -1530,43 +2579,114 @@ class FlipperBleService : Service() {
             ?: discoveredBluetoothDevices[address]
             ?: runCatching { bluetoothAdapter?.getRemoteDevice(address) }.getOrNull()
             ?: return false
+        val deviceName = lastRequestedDeviceName ?: pendingConnectionName ?: DEFAULT_FLIPPER_NAME
 
-        reconnectAttemptCount += 1
-        val retryDelayMs =
-            TIMEOUT_RECONNECT_DELAY_MS + ((reconnectAttemptCount - 1) * TIMEOUT_RECONNECT_BACKOFF_STEP_MS)
-        serviceScope.launch {
-            Log.w(
-                TAG,
-                "Scheduling reconnect attempt=$reconnectAttemptCount delayMs=$retryDelayMs " +
-                        "status=${describeGattStatus(status)}"
-            )
-            delay(retryDelayMs)
-            if (_connectionState.value !is ConnectionState.Connecting) {
-                return@launch
-            }
-            bluetoothGatt?.let { existing ->
-                runCatching { existing.disconnect() }
-                runCatching { existing.close() }
-                bluetoothGatt = null
-            }
-            val useAutoConnect = reconnectAttemptCount > 1
-            Log.w(
-                TAG,
-                "Starting reconnect attempt=$reconnectAttemptCount autoConnect=$useAutoConnect " +
-                        "address=${bluetoothDevice.address}"
-            )
-            bluetoothGatt = connectGattCompat(
-                device = bluetoothDevice,
-                autoConnect = useAutoConnect
-            )
-            if (bluetoothGatt == null) {
-                _connectionState.value = ConnectionState.Error(
-                    "Auto-reconnect could not start (${describeGattStatus(status)}). Retry manually."
+        reconnectJob = serviceScope.launch {
+            Log.w(TAG, "Reconnect series started: $reason")
+            while (isActive && sessionRequested) {
+                if (reconnectAttemptCount >= MAX_RECONNECT_ATTEMPTS) break
+                reconnectAttemptCount += 1
+                totalReconnectCount += 1
+                updateConnectionHealth(force = true)
+                val delayMs = resolveReconnectDelayMs(reconnectAttemptCount)
+                setConnectionState(
+                    ConnectionState.Connecting(
+                        "$deviceName (reconnect $reconnectAttemptCount/$MAX_RECONNECT_ATTEMPTS)"
+                    )
                 )
-                updateNotification()
+                Log.w(
+                    TAG,
+                    "Reconnect attempt=$reconnectAttemptCount delayMs=$delayMs reason=$reason"
+                )
+                delay(delayMs)
+                if (!isActive || !sessionRequested) return@launch
+                // A radio that was turned off during the backoff is not an error:
+                // the Bluetooth state receiver resumes the session when it is on.
+                if (bluetoothAdapter?.isEnabled != true) return@launch
+
+                teardownBleTransport(clearRequestedDevice = false)
+                flipperProtocol.onConnectionReset()
+                val useAutoConnect = reconnectAttemptCount > 1
+                val gatt = connectGattCompat(bluetoothDevice, autoConnect = useAutoConnect)
+                if (!sessionRequested || activeTransport != CommandTransport.NONE) {
+                    runCatching { gatt?.disconnect() }
+                    runCatching { gatt?.close() }
+                    gattLinkConnected = false
+                    connectedSinceMs = null
+                    return@launch
+                }
+                bluetoothGatt = gatt
+                if (gatt != null) {
+                    startConnectAttemptTimeout()
+                    return@launch
+                }
+            }
+
+            if (sessionRequested) {
+                // Clear the job reference first: isSessionBusy() must see this
+                // series as finished before idle shutdown is scheduled.
+                reconnectJob = null
+                sessionRequested = false
+                setConnectionState(
+                    ConnectionState.Error(
+                        message = "Could not reconnect to $deviceName after " +
+                                "$reconnectAttemptCount attempts. Make sure Bluetooth is on, the Flipper " +
+                                "is unlocked and no other app is connected, then tap Connect.",
+                        reason = ConnectionFailure.CONNECTION_TIMEOUT
+                    )
+                )
+                scheduleIdleShutdown()
             }
         }
         return true
+    }
+
+    private fun resolveReconnectDelayMs(attempt: Int): Long {
+        val exponent = (attempt - 1).coerceIn(0, 5)
+        return (RECONNECT_BASE_DELAY_MS shl exponent).coerceAtMost(RECONNECT_MAX_DELAY_MS)
+    }
+
+    private fun cancelPendingReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+    }
+
+    /**
+     * Guards a single connectGatt() attempt. Some stacks never deliver
+     * onConnectionStateChange for a failed link, which would otherwise leave the
+     * UI stuck on "Connecting" until the user retries.
+     */
+    private fun startConnectAttemptTimeout() {
+        cancelConnectAttemptTimeout()
+        connectAttemptTimeoutJob = serviceScope.launch {
+            delay(CONNECT_ATTEMPT_TIMEOUT_MS)
+            if (!sessionRequested) return@launch
+            // A GATT link can be up while service discovery/notification setup is
+            // still stuck. Treat that as a failed attempt too.
+            if (notificationsReady) return@launch
+            if (_connectionState.value !is ConnectionState.Connecting) return@launch
+            Log.w(TAG, "BLE connect attempt timed out after ${CONNECT_ATTEMPT_TIMEOUT_MS}ms")
+            connectAttemptTimeoutJob = null
+            teardownBleTransport(clearRequestedDevice = false)
+            if (!scheduleReconnect(reason = "Connect attempt timed out")) {
+                // A series may already be in flight; let it own the state.
+                if (reconnectJob?.isActive == true) return@launch
+                sessionRequested = false
+                setConnectionState(
+                    ConnectionState.Error(
+                        message = "Timed out connecting to the Flipper. Keep it unlocked and nearby, " +
+                                "close other Flipper apps, then tap Connect again.",
+                        reason = ConnectionFailure.CONNECTION_TIMEOUT
+                    )
+                )
+                scheduleIdleShutdown()
+            }
+        }
+    }
+
+    private fun cancelConnectAttemptTimeout() {
+        connectAttemptTimeoutJob?.cancel()
+        connectAttemptTimeoutJob = null
     }
 
     private fun describeGattStatus(status: Int): String {
@@ -1584,12 +2704,14 @@ class FlipperBleService : Service() {
     @SuppressLint("MissingPermission")
     private fun connectGattCompat(device: BluetoothDevice, autoConnect: Boolean): BluetoothGatt? {
         if (!hasBluetoothPermissions()) return null
-        return device.connectGatt(
-            this,
-            autoConnect,
-            gattCallback,
-            BluetoothDevice.TRANSPORT_LE
-        )
+        return runCatching {
+            device.connectGatt(
+                this,
+                autoConnect,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE
+            )
+        }.onFailure { Log.w(TAG, "connectGatt failed: ${it.message}") }.getOrNull()
     }
 
     private fun resolveSerialService(gatt: BluetoothGatt): BluetoothGattService? {
@@ -1710,6 +2832,13 @@ class FlipperBleService : Service() {
         pendingConnectionName = null
         pendingConnectedDevice = null
         activeTransport = CommandTransport.BLE
+        gattLinkConnected = true
+        cancelConnectAttemptTimeout()
+        cancelPendingReconnect()
+        // Success resets the backoff series; the cumulative count stays as a
+        // health metric for the UI.
+        reconnectAttemptCount = 0
+        connectedSinceMs = System.currentTimeMillis()
         markBleActivity()
         normalizeBleAddress(device.address)?.let { normalized ->
             if (confirmedFlipperAddresses.add(normalized)) {
@@ -1717,15 +2846,16 @@ class FlipperBleService : Service() {
             }
         }
         _connectedDevice.value = device
-        _connectionState.value = ConnectionState.Connected(device.name)
-        updateNotification()
-        startBleKeepalive()
+        setConnectionState(ConnectionState.Connected(device.name))
+        updateConnectionHealth(force = true)
+        startConnectionWatchdog()
 
         // Enable overflow control but do NOT auto-probe the automation channel on connect.
         // The CLI/RPC probe is expensive and should only run when the user explicitly
         // requests diagnostics or when a command actually needs the automation channel.
         serviceScope.launch {
-            enableOverflowControl()
+            runCatching { enableOverflowControl() }
+                .onFailure { Log.w(TAG, "Could not enable overflow control: ${it.message}") }
         }
     }
 
@@ -1818,10 +2948,23 @@ class FlipperBleService : Service() {
                 _connectionState.value is ConnectionState.Connected
     }
 
+    /**
+     * Waits briefly for the command transport to become usable.
+     *
+     * Fails fast when there is no session at all (disconnected/error with no
+     * pending reconnect) so a disconnection cannot stall every queued command
+     * for the full readiness window.
+     */
     suspend fun awaitCommandTransportReady(
         timeoutMs: Long = COMMAND_TRANSPORT_READY_TIMEOUT_MS
     ): Boolean {
         if (isCommandTransportConnected()) return true
+        val waitingForSession = sessionRequested ||
+                scanActive ||
+                reconnectJob?.isActive == true ||
+                _connectionState.value is ConnectionState.Connecting ||
+                _connectionState.value is ConnectionState.Connected
+        if (!waitingForSession) return false
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (isCommandTransportConnected()) return true
@@ -2133,7 +3276,10 @@ class FlipperBleService : Service() {
         val gatt = bluetoothGatt ?: return false
         if (!hasBluetoothPermissions()) return false
 
-        return writeMutex.withLock {
+        return withWriteMutexOrFail(
+            lockTimeoutMs = WRITE_MUTEX_CONTROL_WAIT_TIMEOUT_MS,
+            timeoutReason = "Serial reset skipped: write queue busy"
+        ) {
             withContext(Dispatchers.IO) {
                 val ack = CompletableDeferred<Boolean>()
                 pendingWriteAck = ack
@@ -2148,7 +3294,7 @@ class FlipperBleService : Service() {
                 pendingWriteAck = null
                 confirmed
             }
-        }
+        } ?: false
     }
 
     /**
@@ -2410,10 +3556,41 @@ class FlipperBleService : Service() {
 
     companion object {
         private const val TAG = "FlipperBleService"
+
+        /**
+         * Legacy action: promotes the service to the foreground without starting
+         * any new work. Kept for callers compiled against the old lifecycle.
+         */
         const val ACTION_START_FOREGROUND = "com.vesper.flipper.START_FOREGROUND"
+
+        /** Starts a scan session in the foreground (user-initiated scan). */
+        const val ACTION_START_SCAN = "com.vesper.flipper.START_SCAN"
+
+        /** Stops an in-flight scan; the service drops to idle when nothing else is busy. */
+        const val ACTION_STOP_SCAN = "com.vesper.flipper.STOP_SCAN"
+
+        /** Starts a BLE connection session. Requires [EXTRA_DEVICE_ADDRESS]. */
+        const val ACTION_CONNECT = "com.vesper.flipper.CONNECT"
+
+        /** Starts a USB connection session. */
+        const val ACTION_CONNECT_USB = "com.vesper.flipper.CONNECT_USB"
+
+        /** Keeps the foreground session alive without starting new work. */
+        const val ACTION_SESSION_ACTIVE = "com.vesper.flipper.SESSION_ACTIVE"
+
+        /** Warms the service without promoting it to the foreground. */
+        const val ACTION_WARM_START = "com.vesper.flipper.WARM_START"
+
+        /** Stops the session and the service. */
         const val ACTION_STOP = "com.vesper.flipper.STOP"
+
         const val ACTION_USB_PERMISSION = "com.vesper.flipper.USB_PERMISSION"
+
+        const val EXTRA_DEVICE_ADDRESS = "com.vesper.flipper.extra.DEVICE_ADDRESS"
+        const val EXTRA_DEVICE_NAME = "com.vesper.flipper.extra.DEVICE_NAME"
+
         const val NOTIFICATION_ID = 1
+        private const val NOTIFICATION_CONTENT_INTENT_REQUEST_CODE = 0
 
         const val SCAN_TIMEOUT_MS = 30_000L
         private const val BROAD_SCAN_FALLBACK_DELAY_MS = 4_000L
@@ -2460,9 +3637,13 @@ class FlipperBleService : Service() {
         private const val NOTIFICATION_READY_POLL_MS = 50L
         private const val COMMAND_TRANSPORT_READY_TIMEOUT_MS = 5_000L
         private const val COMMAND_TRANSPORT_READY_POLL_MS = 50L
-        private const val BLE_KEEPALIVE_INTERVAL_MS = 3_000L
+        private const val CONNECTION_WATCHDOG_TICK_MS = 5_000L
         private const val BLE_KEEPALIVE_IDLE_THRESHOLD_MS = 3_500L
         private const val BLE_PRIORITY_REFRESH_INTERVAL_MS = 45_000L
+        private const val SILENT_DROP_TIMEOUT_MS = 25_000L
+        private const val CONNECT_ATTEMPT_TIMEOUT_MS = 20_000L
+        private const val IDLE_STOP_GRACE_MS = 2_500L
+        private const val HEALTH_PUBLISH_MIN_INTERVAL_MS = 1_000L
         private const val OVERFLOW_WAIT_TIMEOUT_MS = 3_000L
         private const val OVERFLOW_WAIT_POLL_MS = 20L
         private const val OVERFLOW_VALUE_SIZE_BYTES = 4
@@ -2472,9 +3653,9 @@ class FlipperBleService : Service() {
         private const val MIN_BLE_CHUNK_BYTES = 20
         // Flipper serial profile max characteristic value length (firmware serial_service.h).
         private const val MAX_SERIAL_CHAR_VALUE_BYTES = 243
-        private const val TIMEOUT_RECONNECT_DELAY_MS = 1_000L
-        private const val TIMEOUT_RECONNECT_BACKOFF_STEP_MS = 500L
-        private const val MAX_TIMEOUT_RECONNECT_ATTEMPTS = 3
+        private const val RECONNECT_BASE_DELAY_MS = 1_000L
+        private const val RECONNECT_MAX_DELAY_MS = 30_000L
+        private const val MAX_RECONNECT_ATTEMPTS = 5
         private const val GATT_STATUS_CONN_TIMEOUT = 8
         private const val GATT_STATUS_CONN_TERMINATE_PEER_USER = 19
         private const val GATT_STATUS_CONN_TERMINATE_LOCAL_HOST = 22
@@ -2500,22 +3681,98 @@ class FlipperBleService : Service() {
         private val KNOWN_FLIPPER_USB_VENDOR_IDS = setOf(0x0483)
         private val KNOWN_FLIPPER_USB_PRODUCT_IDS = setOf(0x5740, 0x5741)
 
-        fun startService(context: Context) {
-            val intent = Intent(context, FlipperBleService::class.java).apply {
-                action = ACTION_START_FOREGROUND
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+        /**
+         * Warms the service process without promoting it to the foreground.
+         *
+         * This is the current semantic of the legacy [startService] entry point:
+         * no persistent notification is posted. The service promotes itself only
+         * when a scan/connect actually starts, and stops itself when idle and
+         * unbound.
+         */
+        fun warmStart(context: Context) {
+            val intent = Intent(context, FlipperBleService::class.java)
+                .setAction(ACTION_WARM_START)
+            runCatching { context.startService(intent) }
+        }
+
+        /**
+         * Legacy entry point kept for source compatibility.
+         *
+         * Semantics changed: this no longer starts a foreground service. Use
+         * [startScanSession], [connectSession] or [connectUsbSession] when the
+         * user explicitly starts work so Android keeps the session alive.
+         */
+        fun startService(context: Context) = warmStart(context)
+
+        /**
+         * Stops the service, and with it any active session. Safe to call when
+         * the service is not running: it never starts the service just to stop it.
+         */
+        fun stopService(context: Context) {
+            runCatching {
+                context.stopService(Intent(context, FlipperBleService::class.java))
             }
         }
 
-        fun stopService(context: Context) {
-            val intent = Intent(context, FlipperBleService::class.java).apply {
-                action = ACTION_STOP
+        /** Starts a foreground scan session (user tapped Scan). */
+        fun startScanSession(context: Context) {
+            startForegroundSession(
+                context,
+                Intent(context, FlipperBleService::class.java).setAction(ACTION_START_SCAN),
+                Manifest.permission.BLUETOOTH_SCAN
+            )
+        }
+
+        /** Starts a foreground BLE connect session for [device] (user picked a device). */
+        fun connectSession(context: Context, device: FlipperDevice) {
+            val intent = Intent(context, FlipperBleService::class.java)
+                .setAction(ACTION_CONNECT)
+                .putExtra(EXTRA_DEVICE_ADDRESS, device.address)
+                .putExtra(EXTRA_DEVICE_NAME, device.name)
+            startForegroundSession(context, intent, Manifest.permission.BLUETOOTH_CONNECT)
+        }
+
+        /** Starts a foreground USB connect session. */
+        fun connectUsbSession(context: Context) {
+            startForegroundSession(
+                context,
+                Intent(context, FlipperBleService::class.java).setAction(ACTION_CONNECT_USB),
+                requiredPermission = null
+            )
+        }
+
+        /**
+         * Starts the service through [Context.startForegroundService] so a user
+         * action can outlive the UI. When the required Bluetooth permission is
+         * missing the call degrades to a warm start instead: posting a foreground
+         * service without its permission prerequisite would throw.
+         */
+        private fun startForegroundSession(
+            context: Context,
+            intent: Intent,
+            requiredPermission: String?
+        ) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                requiredPermission != null &&
+                ContextCompat.checkSelfPermission(context, requiredPermission) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                warmStart(context)
+                return
             }
-            context.startService(intent)
+            val started = runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            }
+            if (started.isFailure) {
+                // Background foreground-service starts are restricted on Android 8+.
+                // Fall back to a warm start; a bound client can still drive the
+                // session, and the service promotes itself when possible.
+                runCatching { context.startService(intent) }
+            }
         }
     }
 }
@@ -2539,12 +3796,73 @@ data class FlipperDevice(
 )
 
 /**
- * Connection state for the BLE service
+ * Connection state for the BLE service.
+ *
+ * Every state is published through a StateFlow, so consumers always observe the
+ * latest transition. [Error] carries a machine-readable [reason] in addition to
+ * the actionable message shown to the user.
+ *
+ * Transition summary:
+ *  - Disconnected -> Scanning -> Disconnected (timeout/cancel) or Connecting;
+ *  - Disconnected -> Connecting -> Connected;
+ *  - Connecting/Connected -> Connecting("reconnect n/max") on a drop, then
+ *    Connected on success or Error when the backoff series is exhausted;
+ *  - any state -> Error for permission, radio, scan, USB or setup failures;
+ *  - Error/Disconnected -> idle: the foreground notification is removed and the
+ *    service stops when nothing is bound.
  */
 sealed class ConnectionState {
     object Disconnected : ConnectionState()
     object Scanning : ConnectionState()
     data class Connecting(val deviceName: String) : ConnectionState()
     data class Connected(val deviceName: String) : ConnectionState()
-    data class Error(val message: String) : ConnectionState()
+    data class Error(
+        val message: String,
+        val reason: ConnectionFailure = ConnectionFailure.UNKNOWN,
+    ) : ConnectionState()
+}
+
+/**
+ * Machine-readable cause of a [ConnectionState.Error], so the UI can offer the
+ * right recovery action instead of a generic failure.
+ */
+enum class ConnectionFailure {
+    UNKNOWN,
+    PERMISSION_DENIED,
+    BLUETOOTH_DISABLED,
+    SCAN_FAILED,
+    DEVICE_NOT_FOUND,
+    CONNECTION_TIMEOUT,
+    SILENT_DROP,
+    SERVICE_DISCOVERY_FAILED,
+    TRANSPORT_UNAVAILABLE,
+    USB_PERMISSION_DENIED,
+    USB_UNAVAILABLE,
+    PROTOCOL_ERROR,
+}
+
+/**
+ * Lightweight connection health snapshot for the UI.
+ *
+ * @property lastPacketAtMs wall-clock time of the last truly received packet
+ * (notification or serial read), 0 when none has arrived this session.
+ * @property lastActivityAtMs wall-clock time of the last successful link
+ * activity (packet, completed write, or read callback).
+ * @property connectedSinceMs when the current connection was established.
+ * @property reconnectCount cumulative auto-reconnect attempts for this service
+ * instance; reset only when the process/service restarts.
+ * @property silentForMs how long the link has been quiet; the watchdog treats a
+ * sustained silence (25s) as a silent drop and starts a reconnect series.
+ */
+data class ConnectionHealth(
+    val lastPacketAtMs: Long = 0L,
+    val lastActivityAtMs: Long = 0L,
+    val connectedSinceMs: Long? = null,
+    val reconnectCount: Int = 0,
+    val silentForMs: Long = 0L,
+) {
+    /** Age of the last received packet, or -1 when no packet was seen yet. */
+    fun lastPacketAgeMs(nowMs: Long = System.currentTimeMillis()): Long {
+        return if (lastPacketAtMs <= 0L) -1L else (nowMs - lastPacketAtMs).coerceAtLeast(0L)
+    }
 }

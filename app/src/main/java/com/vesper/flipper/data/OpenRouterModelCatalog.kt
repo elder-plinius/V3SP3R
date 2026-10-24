@@ -29,7 +29,22 @@ class OpenRouterModelCatalog @Inject constructor() {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    /** Last catalog that was successfully fetched this process; avoids a network round-trip per Settings open. */
+    @Volatile
+    private var cachedCatalog: List<ModelInfo>? = null
+
+    /**
+     * Offline-safe accessor: returns the live catalog when reachable, the last
+     * cached catalog, or [SettingsStore.FALLBACK_MODELS]. Never returns an
+     * empty list, so the model picker always has something selectable.
+     */
+    suspend fun loadModels(): List<ModelInfo> =
+        fetchLatestByManufacturer()
+            .onSuccess { cachedCatalog = it }
+            .getOrElse { cachedCatalog ?: SettingsStore.FALLBACK_MODELS }
 
     suspend fun fetchLatestByManufacturer(): Result<List<ModelInfo>> = withContext(Dispatchers.IO) {
         try {
@@ -53,7 +68,8 @@ class OpenRouterModelCatalog @Inject constructor() {
                     ?: return@withContext Result.failure(IOException("Invalid model catalog payload"))
 
                 val remoteModels = data.mapNotNull { element ->
-                    val modelObj = element.jsonObject
+                    // A single malformed entry must not fail the whole catalog.
+                    val modelObj = element as? JsonObject ?: return@mapNotNull null
                     val id = modelObj.string("id") ?: return@mapNotNull null
                     RemoteModel(
                         id = id,
@@ -87,6 +103,7 @@ class OpenRouterModelCatalog @Inject constructor() {
                     return@withContext Result.success(SettingsStore.FALLBACK_MODELS)
                 }
 
+
                 val selectedByProviderId = selectedByProvider.associateBy { providerFromId(it.id) }.toMutableMap()
                 SettingsStore.FALLBACK_MODELS.forEach { fallback ->
                     selectedByProviderId.putIfAbsent(providerFromId(fallback.id), fallback)
@@ -94,7 +111,7 @@ class OpenRouterModelCatalog @Inject constructor() {
 
                 val ordered = MAJOR_MANUFACTURERS.mapNotNull { manufacturer ->
                     selectedByProviderId[manufacturer.providerId]
-                }
+                }.ifEmpty { SettingsStore.FALLBACK_MODELS }
 
                 Result.success(ordered)
             }

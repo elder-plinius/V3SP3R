@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_vesper_logo_foreground"
+        android:shortcutId="chat"
+        android:shortcutLongLabel="@string/shortcut_chat_long"
+        android:shortcutShortLabel="@string/shortcut_chat_short">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="vesper://open/chat"
+            android:targetClass="com.vesper.flipper.MainActivity"
+            android:targetPackage="com.vesper.flipper" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_flipper"
+        android:shortcutId="device"
+        android:shortcutLongLabel="@string/shortcut_device_long"
+        android:shortcutShortLabel="@string/shortcut_device_short">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="vesper://open/device"
+            android:targetClass="com.vesper.flipper.MainActivity"
+            android:targetPackage="com.vesper.flipper" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/ic_flipper"
+        android:shortcutId="audit"
+        android:shortcutLongLabel="@string/shortcut_audit_long"
+        android:shortcutShortLabel="@string/shortcut_audit_short">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="vesper://open/audit"
+            android:targetClass="com.vesper.flipper.MainActivity"
+            android:targetPackage="com.vesper.flipper" />
+    </shortcut>
+</shortcuts>

@@ -57,3 +57,16 @@ secrets/
 
 # Crash logs
 crash-reports/
+
+# Kotlin compiler / incremental build state
+.kotlin/
+
+# JVM heap dumps
+*.hprof
+
+# Local release output
+app/release/
+
+# Local build helpers (machine-specific)
+local-build.*
+build-local.*

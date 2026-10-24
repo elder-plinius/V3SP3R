@@ -79,9 +79,24 @@ class FlipperProtocol @Inject constructor() {
         this.bleService = service
     }
 
+    /**
+     * Resets per-connection protocol state.
+     *
+     * Also drains the write queue: packets queued for the previous transport
+     * must never be replayed against a new session after a reconnect.
+     */
     fun onConnectionReset() {
         responseBuffer.reset()
+        // Abort in-flight raw collectors so a pending read returns immediately
+        // instead of waiting out its full timeout on a dead transport.
+        rawCliCollector?.abort()
+        rawBinaryCollector?.abort()
         rawCliCollector = null
+        rawBinaryCollector = null
+        isWriting.set(false)
+        while (writeQueue.tryReceive().isSuccess) {
+            // Drain stale commands from the closed session.
+        }
         firmwareProfile = FirmwareProfile.UNKNOWN
         lastCliProbeAtMs = 0L
         desktopLockProbeSupported = null
@@ -546,8 +561,16 @@ class FlipperProtocol @Inject constructor() {
         }
     }
 
+    /**
+     * Ensures the command transport is usable without stalling a command for the
+     * full readiness window when the user is simply disconnected.
+     */
     private suspend fun ensureTransportConnected(service: FlipperBleService): Boolean {
         if (service.isCommandTransportConnected()) return true
+        val state = service.connectionState.value
+        if (state is ConnectionState.Disconnected || state is ConnectionState.Error) {
+            return false
+        }
         return service.awaitCommandTransportReady()
     }
 
@@ -3181,6 +3204,7 @@ class FlipperProtocol @Inject constructor() {
             withTimeoutOrNull(timeoutMs) {
                 while (true) {
                     delay(RAW_CLI_QUIET_PERIOD_MS)
+                    if (collector.isAborted()) return@withTimeoutOrNull ""
                     val quietForMs = System.currentTimeMillis() - collector.lastUpdateMs
                     if (collector.hasData() && quietForMs >= RAW_CLI_QUIET_PERIOD_MS) {
                         break
@@ -3208,6 +3232,7 @@ class FlipperProtocol @Inject constructor() {
             withTimeoutOrNull(timeoutMs) {
                 while (true) {
                     delay(RAW_BINARY_QUIET_PERIOD_MS)
+                    if (collector.isAborted()) return@withTimeoutOrNull ByteArray(0)
                     val quietForMs = System.currentTimeMillis() - collector.lastUpdateMs
                     if (collector.hasData() && quietForMs >= RAW_BINARY_QUIET_PERIOD_MS) {
                         break
@@ -3227,6 +3252,7 @@ class FlipperProtocol @Inject constructor() {
             withTimeoutOrNull(timeoutMs) {
                 while (true) {
                     delay(RAW_BINARY_QUIET_PERIOD_MS)
+                    if (collector.isAborted()) return@withTimeoutOrNull ByteArray(0)
                     val quietForMs = System.currentTimeMillis() - collector.lastUpdateMs
                     if (collector.hasData() && quietForMs >= RAW_BINARY_QUIET_PERIOD_MS) {
                         break
@@ -3699,6 +3725,14 @@ class FlipperProtocol @Inject constructor() {
         @Volatile
         var lastUpdateMs: Long = System.currentTimeMillis()
             private set
+        @Volatile
+        private var aborted: Boolean = false
+
+        fun abort() {
+            aborted = true
+        }
+
+        fun isAborted(): Boolean = aborted
 
         fun append(data: ByteArray) {
             val chunk = String(data, Charsets.UTF_8)
@@ -3722,6 +3756,14 @@ class FlipperProtocol @Inject constructor() {
         @Volatile
         var lastUpdateMs: Long = System.currentTimeMillis()
             private set
+        @Volatile
+        private var aborted: Boolean = false
+
+        fun abort() {
+            aborted = true
+        }
+
+        fun isAborted(): Boolean = aborted
 
         fun append(data: ByteArray) {
             synchronized(buffer) {

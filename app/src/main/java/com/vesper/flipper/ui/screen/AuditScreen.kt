@@ -1,83 +1,142 @@
 package com.vesper.flipper.ui.screen
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.vesper.flipper.domain.model.*
-import com.vesper.flipper.ui.theme.*
+import com.vesper.flipper.domain.model.PendingApproval
+import com.vesper.flipper.ui.components.VCard
+import com.vesper.flipper.ui.components.VChip
+import com.vesper.flipper.ui.components.VEmptyState
+import com.vesper.flipper.ui.components.VPrimaryButton
+import com.vesper.flipper.ui.components.VSecondaryButton
+import com.vesper.flipper.ui.components.VSkeletonList
+import com.vesper.flipper.ui.components.VesperScaffold
+import com.vesper.flipper.ui.screen.audit.AuditTimeline
+import com.vesper.flipper.ui.theme.Vesper
+import com.vesper.flipper.ui.theme.VesperSpace
 import com.vesper.flipper.ui.viewmodel.AuditFilterType
 import com.vesper.flipper.ui.viewmodel.AuditViewModel
-import com.vesper.flipper.ui.viewmodel.CommandTimelineItem
-import com.vesper.flipper.ui.viewmodel.CommandTraceStatus
-import java.text.SimpleDateFormat
-import java.util.*
 
+private enum class ClearMode {
+    ALL,
+    OLDER_THAN_WEEK
+}
+
+/**
+ * Audit as a timeline, not a debug dump. Search and four filters narrow the
+ * view; destructive clearing always asks first.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AuditScreen(
+    onNavigateBack: () -> Unit = {},
     viewModel: AuditViewModel = hiltViewModel()
 ) {
+    val colors = Vesper.colors
     val state by viewModel.state.collectAsState()
+    var showActions by remember { mutableStateOf(false) }
+    var clearMode by remember { mutableStateOf<ClearMode?>(null) }
+    val hasActiveFilters = state.filterType != AuditFilterType.ALL || state.searchQuery.isNotBlank()
+    val replayableTraceIds = remember(state.timeline) {
+        state.timeline.map { it.traceId }.toSet()
+    }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text("Audit Log", fontWeight = FontWeight.Bold)
-                },
-                actions = {
-                    var showMenu by remember { mutableStateOf(false) }
-
-                    IconButton(onClick = { showMenu = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More")
-                    }
-
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Clear all logs") },
-                            onClick = {
-                                viewModel.clearAuditLog()
-                                showMenu = false
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.DeleteForever, contentDescription = null)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Clear logs older than 7 days") },
-                            onClick = {
-                                viewModel.clearOldEntries(7)
-                                showMenu = false
-                            },
-                            leadingIcon = {
-                                Icon(Icons.Default.CleaningServices, contentDescription = null)
-                            }
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+    VesperScaffold(
+        title = "Audit log",
+        subtitle = if (state.isLoading) {
+            "Loading activity"
+        } else {
+            state.entries.size.toString() + " events"
+        },
+        navigationIcon = {
+            IconButton(onClick = onNavigateBack) {
+                Icon(
+                    imageVector = Icons.Rounded.ArrowBack,
+                    contentDescription = "Back"
                 )
-            )
+            }
+        },
+        actions = {
+            IconButton(onClick = { showActions = true }) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "More actions"
+                )
+            }
+            DropdownMenu(
+                expanded = showActions,
+                onDismissRequest = { showActions = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Clear all") },
+                    onClick = {
+                        showActions = false
+                        clearMode = ClearMode.ALL
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.DeleteForever,
+                            contentDescription = null,
+                            tint = colors.riskHigh
+                        )
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Clear older than 7 days") },
+                    onClick = {
+                        showActions = false
+                        clearMode = ClearMode.OLDER_THAN_WEEK
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.DeleteForever,
+                            contentDescription = null,
+                            tint = colors.textSecondary
+                        )
+                    }
+                )
+            }
         }
     ) { padding ->
         Column(
@@ -85,10 +144,12 @@ fun AuditScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            ReplayStatusBanner(
-                message = state.replayMessage,
-                onDismiss = { viewModel.clearReplayMessage() }
-            )
+            state.replayMessage?.let { message ->
+                ReplayMessageCard(
+                    message = message,
+                    onDismiss = { viewModel.clearReplayMessage() }
+                )
+            }
 
             state.pendingReplayApproval?.let { approval ->
                 ReplayApprovalCard(
@@ -98,142 +159,130 @@ fun AuditScreen(
                 )
             }
 
-            CommandTimelineSection(
-                timeline = state.timeline,
-                replayingTraceId = state.replayingTraceId,
-                onReplay = { traceId -> viewModel.replayTrace(traceId) }
-            )
-
-            // Filter chips
-            FilterChipRow(
-                selectedFilter = state.filterType,
-                onFilterSelected = { viewModel.setFilter(it) }
-            )
-
-            Text(
-                text = "Raw Audit Entries",
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                fontWeight = FontWeight.SemiBold
-            )
-
-            if (state.entries.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Icon(
-                            Icons.Default.History,
-                            contentDescription = null,
-                            modifier = Modifier.size(48.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            "No audit entries",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+            OutlinedTextField(
+                value = state.searchQuery,
+                onValueChange = { viewModel.setSearchQuery(it) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = VesperSpace.gutter, vertical = VesperSpace.xs),
+                placeholder = { Text("Search by path") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        tint = colors.textTertiary
+                    )
+                },
+                trailingIcon = if (state.searchQuery.isNotBlank()) {
+                    {
+                        IconButton(onClick = { viewModel.setSearchQuery("") }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Clear search",
+                                tint = colors.textSecondary
+                            )
+                        }
                     }
+                } else {
+                    null
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = VesperSpace.gutter),
+                horizontalArrangement = Arrangement.spacedBy(VesperSpace.xs),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AuditFilterType.values().forEach { filter ->
+                    VChip(
+                        text = filterLabel(filter),
+                        selected = state.filterType == filter,
+                        onClick = { viewModel.setFilter(filter) },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    )
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(state.entries) { entry ->
-                        AuditEntryItem(
-                            entry = entry,
-                            onClick = { viewModel.selectEntry(entry) }
-                        )
-                    }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                when {
+                    state.isLoading -> VSkeletonList(rows = 6)
+
+                    state.entries.isEmpty() && hasActiveFilters -> CenteredAuditState(
+                        title = "No entries match",
+                        message = "Try a different filter or clear the path search.",
+                        actionLabel = "Clear filters",
+                        onAction = { viewModel.clearFilters() }
+                    )
+
+                    state.entries.isEmpty() -> CenteredAuditState(
+                        title = "No activity yet",
+                        message = "Commands, approvals, and connection events appear here as you use Vesper.",
+                        actionLabel = null,
+                        onAction = null
+                    )
+
+                    else -> AuditTimeline(
+                        entries = state.entries,
+                        replayableTraceIds = replayableTraceIds,
+                        replayingTraceId = state.replayingTraceId,
+                        onReplay = { traceId -> viewModel.replayTrace(traceId) }
+                    )
                 }
             }
         }
-
-        // Detail sheet
-        state.selectedEntry?.let { entry ->
-            AuditDetailSheet(
-                entry = entry,
-                onDismiss = { viewModel.clearSelection() }
-            )
-        }
     }
-}
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun FilterChipRow(
-    selectedFilter: AuditFilterType,
-    onFilterSelected: (AuditFilterType) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        FilterChip(
-            selected = selectedFilter == AuditFilterType.ALL,
-            onClick = { onFilterSelected(AuditFilterType.ALL) },
-            label = { Text("All") }
-        )
-        FilterChip(
-            selected = selectedFilter == AuditFilterType.COMMANDS,
-            onClick = { onFilterSelected(AuditFilterType.COMMANDS) },
-            label = { Text("Commands") }
-        )
-        FilterChip(
-            selected = selectedFilter == AuditFilterType.APPROVALS,
-            onClick = { onFilterSelected(AuditFilterType.APPROVALS) },
-            label = { Text("Approvals") }
-        )
-        FilterChip(
-            selected = selectedFilter == AuditFilterType.ERRORS,
-            onClick = { onFilterSelected(AuditFilterType.ERRORS) },
-            label = { Text("Errors") }
+    clearMode?.let { mode ->
+        ClearAuditDialog(
+            mode = mode,
+            onDismiss = { clearMode = null },
+            onConfirm = {
+                when (mode) {
+                    ClearMode.ALL -> viewModel.clearAuditLog()
+                    ClearMode.OLDER_THAN_WEEK -> viewModel.clearOldEntries(7)
+                }
+                clearMode = null
+            }
         )
     }
 }
 
 @Composable
-private fun ReplayStatusBanner(
-    message: String?,
-    onDismiss: () -> Unit
-) {
-    if (message.isNullOrBlank()) return
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer
-        )
+private fun ReplayMessageCard(message: String, onDismiss: () -> Unit) {
+    val colors = Vesper.colors
+    VCard(
+        level = 1,
+        modifier = Modifier.padding(horizontal = VesperSpace.md, vertical = VesperSpace.xs)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                Icons.Default.Info,
+                imageVector = Icons.Default.Info,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSecondaryContainer
+                tint = colors.info,
+                modifier = Modifier.size(18.dp)
             )
-            Spacer(modifier = Modifier.width(10.dp))
+            Spacer(Modifier.width(VesperSpace.xs))
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                color = colors.textSecondary,
                 modifier = Modifier.weight(1f)
             )
             IconButton(onClick = onDismiss) {
-                Icon(Icons.Default.Close, contentDescription = "Dismiss")
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Dismiss replay message",
+                    tint = colors.textSecondary
+                )
             }
         }
     }
@@ -245,433 +294,118 @@ private fun ReplayApprovalCard(
     onApprove: () -> Unit,
     onReject: () -> Unit
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = RiskMedium.copy(alpha = 0.16f)
-        )
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                text = "Replay Approval Required",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = approval.command.action.name.replace('_', ' '),
-                style = MaterialTheme.typography.bodySmall
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = onApprove) {
-                    Icon(Icons.Default.Check, contentDescription = null)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Approve")
-                }
-                OutlinedButton(onClick = onReject) {
-                    Icon(Icons.Default.Close, contentDescription = null)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Reject")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CommandTimelineSection(
-    timeline: List<CommandTimelineItem>,
-    replayingTraceId: String?,
-    onReplay: (String) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
+    val colors = Vesper.colors
+    VCard(
+        level = 3,
+        modifier = Modifier.padding(horizontal = VesperSpace.md, vertical = VesperSpace.xs)
     ) {
         Text(
-            text = "Command Timeline",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold
+            text = "Replay needs approval",
+            style = MaterialTheme.typography.titleMedium,
+            color = colors.textPrimary
         )
-        Spacer(modifier = Modifier.height(8.dp))
-        if (timeline.isEmpty()) {
-            Text(
-                text = "No command traces yet.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        } else {
-            timeline.take(20).forEach { item ->
-                CommandTimelineItemCard(
-                    item = item,
-                    isReplaying = replayingTraceId == item.traceId,
-                    onReplay = { onReplay(item.traceId) }
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun CommandTimelineItemCard(
-    item: CommandTimelineItem,
-    isReplaying: Boolean,
-    onReplay: () -> Unit
-) {
-    val (icon, tint) = when (item.status) {
-        CommandTraceStatus.RECEIVED -> Icons.Default.CallReceived to MaterialTheme.colorScheme.primary
-        CommandTraceStatus.WAITING_APPROVAL -> Icons.Default.PendingActions to RiskMedium
-        CommandTraceStatus.EXECUTED -> Icons.Default.CheckCircle to VesperAccent
-        CommandTraceStatus.FAILED -> Icons.Default.Error to RiskHigh
-        CommandTraceStatus.BLOCKED -> Icons.Default.Block to RiskBlocked
-        CommandTraceStatus.DENIED -> Icons.Default.ThumbDown to RiskMedium
-        CommandTraceStatus.TIMED_OUT -> Icons.Default.TimerOff to RiskHigh
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        Text(
+            text = approval.command.action.name.replace('_', ' ').lowercase(),
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.textSecondary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = item.command.action.name.replace('_', ' ').lowercase()
-                        .replaceFirstChar { it.uppercase() },
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = "${item.durationMs}ms",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = item.summary,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2
-            )
-            item.error?.takeIf { it.isNotBlank() }?.let { err ->
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = err.take(160),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = RiskHigh
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = onReplay,
-                enabled = !isReplaying
-            ) {
-                if (isReplaying) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Replaying...")
-                } else {
-                    Icon(Icons.Default.Replay, contentDescription = null)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Replay")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AuditEntryItem(
-    entry: AuditEntry,
-    onClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
+        Spacer(Modifier.height(VesperSpace.xs))
         Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(VesperSpace.xs)
         ) {
-            // Icon
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(getAuditColor(entry.actionType)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = getAuditIcon(entry.actionType),
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = formatActionType(entry.actionType),
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = formatTimestamp(entry.timestamp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    entry.riskLevel?.let { risk ->
-                        Spacer(modifier = Modifier.width(8.dp))
-                        RiskBadge(risk)
-                    }
-                }
-            }
-
-            // Approval indicator
-            entry.userApproved?.let { approved ->
-                Icon(
-                    if (approved) Icons.Default.CheckCircle else Icons.Default.Cancel,
-                    contentDescription = null,
-                    tint = if (approved) VesperAccent else RiskHigh,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun RiskBadge(riskLevel: RiskLevel) {
-    Surface(
-        shape = RoundedCornerShape(4.dp),
-        color = when (riskLevel) {
-            RiskLevel.LOW -> RiskLow
-            RiskLevel.MEDIUM -> RiskMedium
-            RiskLevel.HIGH -> RiskHigh
-            RiskLevel.BLOCKED -> RiskBlocked
-        }.copy(alpha = 0.2f)
-    ) {
-        Text(
-            text = riskLevel.name,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = when (riskLevel) {
-                RiskLevel.LOW -> RiskLow
-                RiskLevel.MEDIUM -> RiskMedium
-                RiskLevel.HIGH -> RiskHigh
-                RiskLevel.BLOCKED -> RiskBlocked
-            }
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AuditDetailSheet(
-    entry: AuditEntry,
-    onDismiss: () -> Unit
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = formatActionType(entry.actionType),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close")
-                }
-            }
-
-            Text(
-                text = formatTimestamp(entry.timestamp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+            VPrimaryButton(
+                text = "Approve",
+                onClick = onApprove,
+                modifier = Modifier.weight(1f)
             )
-
-            Spacer(modifier = Modifier.height(16.dp))
-            Divider()
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Command details
-            entry.command?.let { command ->
-                Text(
-                    "Command",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        DetailRow("Action", command.action.name)
-                        command.args.path?.let {
-                            DetailRow("Path", it)
-                        }
-                        DetailRow("Justification", command.justification)
-                        DetailRow("Expected Effect", command.expectedEffect)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-
-            // Result details
-            entry.result?.let { result ->
-                Text(
-                    "Result",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        DetailRow("Success", if (result.success) "Yes" else "No")
-                        result.error?.let {
-                            DetailRow("Error", it)
-                        }
-                        DetailRow("Execution Time", "${result.executionTimeMs}ms")
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-
-            // Metadata
-            if (entry.metadata.isNotEmpty()) {
-                Text(
-                    "Metadata",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        entry.metadata.forEach { (key, value) ->
-                            DetailRow(key, value)
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
+            VSecondaryButton(
+                text = "Reject",
+                onClick = onReject,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
 
 @Composable
-private fun DetailRow(label: String, value: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
+private fun CenteredAuditState(
+    title: String,
+    message: String,
+    actionLabel: String?,
+    onAction: (() -> Unit)?
+) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = "$label:",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(120.dp)
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            fontFamily = FontFamily.Monospace
+        VEmptyState(
+            title = title,
+            message = message,
+            icon = Icons.Default.History,
+            actionLabel = actionLabel,
+            onAction = onAction
         )
     }
 }
 
-private fun getAuditIcon(actionType: AuditActionType) = when (actionType) {
-    AuditActionType.COMMAND_RECEIVED -> Icons.Default.CallReceived
-    AuditActionType.COMMAND_EXECUTED -> Icons.Default.CheckCircle
-    AuditActionType.COMMAND_FAILED -> Icons.Default.Error
-    AuditActionType.COMMAND_BLOCKED -> Icons.Default.Block
-    AuditActionType.APPROVAL_REQUESTED -> Icons.Default.HelpOutline
-    AuditActionType.APPROVAL_GRANTED -> Icons.Default.ThumbUp
-    AuditActionType.APPROVAL_DENIED -> Icons.Default.ThumbDown
-    AuditActionType.APPROVAL_TIMEOUT -> Icons.Default.Timer
-    AuditActionType.PERMISSION_GRANTED -> Icons.Default.Key
-    AuditActionType.PERMISSION_REVOKED -> Icons.Default.NoEncryption
-    AuditActionType.PERMISSION_EXPIRED -> Icons.Default.Schedule
-    AuditActionType.DEVICE_CONNECTED -> Icons.Default.BluetoothConnected
-    AuditActionType.DEVICE_DISCONNECTED -> Icons.Default.BluetoothDisabled
-    AuditActionType.SESSION_STARTED -> Icons.Default.PlayArrow
-    AuditActionType.SESSION_ENDED -> Icons.Default.Stop
-    AuditActionType.AI_REQUEST -> Icons.Default.Upload
-    AuditActionType.AI_RESPONSE -> Icons.Default.Download
-    AuditActionType.ERROR -> Icons.Default.Warning
+@Composable
+private fun ClearAuditDialog(
+    mode: ClearMode,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    val colors = Vesper.colors
+    val clearAll = mode == ClearMode.ALL
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surface3,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.DeleteForever,
+                contentDescription = null,
+                tint = colors.riskHigh
+            )
+        },
+        title = {
+            Text(
+                text = if (clearAll) "Clear the audit log?" else "Clear older entries?",
+                style = MaterialTheme.typography.headlineSmall,
+                color = colors.textPrimary
+            )
+        },
+        text = {
+            Text(
+                text = if (clearAll) {
+                    "This permanently removes every audit event from this device. It cannot be undone."
+                } else {
+                    "This permanently removes every event older than 7 days. It cannot be undone."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.textSecondary
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(
+                    text = if (clearAll) "Clear all" else "Clear older",
+                    color = colors.riskHigh
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.textSecondary)
+            }
+        }
+    )
 }
 
-private fun getAuditColor(actionType: AuditActionType) = when (actionType) {
-    AuditActionType.COMMAND_EXECUTED,
-    AuditActionType.APPROVAL_GRANTED,
-    AuditActionType.PERMISSION_GRANTED,
-    AuditActionType.DEVICE_CONNECTED -> VesperAccent
-
-    AuditActionType.COMMAND_FAILED,
-    AuditActionType.APPROVAL_DENIED,
-    AuditActionType.ERROR -> RiskHigh
-
-    AuditActionType.COMMAND_BLOCKED -> RiskBlocked
-
-    AuditActionType.APPROVAL_REQUESTED,
-    AuditActionType.APPROVAL_TIMEOUT -> RiskMedium
-
-    else -> VesperSecondary
-}
-
-private fun formatActionType(actionType: AuditActionType): String {
-    return actionType.name
-        .replace("_", " ")
-        .lowercase()
-        .replaceFirstChar { it.uppercase() }
-}
-
-private fun formatTimestamp(timestamp: Long): String {
-    val sdf = SimpleDateFormat("MMM dd, HH:mm:ss", Locale.getDefault())
-    return sdf.format(Date(timestamp))
+private fun filterLabel(filter: AuditFilterType): String = when (filter) {
+    AuditFilterType.ALL -> "All"
+    AuditFilterType.WRITES -> "Writes"
+    AuditFilterType.HIGH_RISK -> "High risk"
+    AuditFilterType.DENIED -> "Denied"
 }

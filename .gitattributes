@@ -1,0 +1,30 @@
+# Normalize text files to LF in the repository.
+* text=auto
+
+# Kotlin / Gradle sources and POSIX scripts use LF.
+*.kt text eol=lf
+*.kts text eol=lf
+*.gradle text eol=lf
+*.properties text eol=lf
+*.pro text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Windows batch files must stay CRLF.
+*.bat text eol=crlf
+
+# Binary artifacts (never diff or convert these).
+*.jar binary
+*.apk binary
+*.aab binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ttf binary
+*.otf binary
+gradle/wrapper/gradle-wrapper.jar binary

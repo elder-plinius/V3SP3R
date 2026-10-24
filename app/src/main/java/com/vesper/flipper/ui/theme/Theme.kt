@@ -1,199 +1,127 @@
 package com.vesper.flipper.ui.theme
 
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.Shapes
-import androidx.compose.material3.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 
 // ═══════════════════════════════════════════════════════════
-// VESPER BRAND — Classy Mythic Cyberpunk Bond
+// VESPER THEME
+// Dark ("The Crypt") is the product. Light ("Bone") is a real,
+// fully specified alternative — not a broken fallback.
 // ═══════════════════════════════════════════════════════════
-
-// Primary: Wine Red — the blood of the machine
-val VesperWine = Color(0xFF8B2038)           // True wine / claret red
-val VesperWineLight = Color(0xFFAD3B50)      // Lighter wine for highlights
-val VesperWineDark = Color(0xFF5E1625)        // Darker wine for pressed states
-
-// Legacy alias — keeps existing references working
-val VesperOrange = VesperWine
-val VesperOrangeDark = VesperWineDark
-
-// Secondary: Gunmetal — cold steel sophistication
-val VesperSecondary = Color(0xFF1A1F2E)       // Gunmetal blue-black
-val VesperGunmetal = Color(0xFF2A3142)         // Lighter gunmetal
-
-// Accent: Champagne Gold — old money elegance
-val VesperAccent = Color(0xFFD4AF37)           // Champagne gold
-val VesperGold = Color(0xFFD4AF37)
-val VesperGoldMuted = Color(0xFF9E8530)        // Muted gold for secondary accents
-
-// Surface Colors — deep noir palette
-val VesperSurface = Color(0xFF0E1118)
-val VesperSurfaceVariant = Color(0xFF161B28)
-val VesperBackground = Color(0xFF060810)
-val VesperBackgroundDeep = Color(0xFF030508)
-val VesperBackgroundGlow = Color(0xFF0D0A14)   // Very subtle wine tint
-
-val VesperBackdropBrush = Brush.verticalGradient(
-    colors = listOf(
-        VesperBackground,
-        VesperBackgroundDeep,
-        VesperBackgroundGlow,
-        VesperBackground
-    )
-)
-
-// Risk Colors — refined
-val RiskLow = Color(0xFF4CAF7D)
-val RiskMedium = Color(0xFFD4AF37)   // Gold for medium — on brand
-val RiskHigh = Color(0xFFCF4455)     // Wine-adjacent red
-val RiskBlocked = Color(0xFF6B7394)
-
-// Diff Colors
-val DiffAdded = Color(0xFF3CBF88)
-val DiffRemoved = Color(0xFFCF4455)
-val DiffChanged = Color(0xFFD4AF37)
-val DiffAddedBackground = Color(0x403CBF88)
-val DiffRemovedBackground = Color(0x40CF4455)
-
-// Chat Colors — distinct from system
-val ChatAssistant = Color(0xFF161B28)       // Dark gunmetal bubble
-val ChatUser = VesperWine                    // Wine bubble for user
-val ChatTool = Color(0xFF121620)             // Even darker for tool results
-val ChatToolAccent = VesperGold              // Gold for tool highlights
 
 private val DarkColorScheme = darkColorScheme(
-    primary = VesperWine,
-    onPrimary = Color(0xFFF5E6EC),
-    primaryContainer = VesperWineDark,
-    onPrimaryContainer = Color(0xFFF8E0EC),
-    secondary = VesperSecondary,
-    onSecondary = Color(0xFFCAD0E0),
-    secondaryContainer = VesperSurfaceVariant,
-    onSecondaryContainer = Color(0xFFD5DEF0),
-    tertiary = VesperGold,
-    onTertiary = Color(0xFF1A1508),
-    background = VesperBackground,
-    onBackground = Color(0xFFE6E8F0),
-    surface = VesperSurface,
-    onSurface = Color(0xFFE4E6EE),
-    surfaceVariant = VesperSurfaceVariant,
-    onSurfaceVariant = Color(0xFF8E96AE),
-    outline = Color(0xFF2E3548),
-    outlineVariant = Color(0xFF1E2536),
-    error = RiskHigh,
-    onError = Color(0xFF200909)
+    primary = Wine,
+    onPrimary = OnWine,
+    primaryContainer = WinePressed,
+    onPrimaryContainer = Color(0xFFF6DDE2),
+    secondary = Rose,
+    onSecondary = Color(0xFF2A0D14),
+    secondaryContainer = S3,
+    onSecondaryContainer = TextPrimary,
+    tertiary = Gold,
+    onTertiary = Ink,
+    tertiaryContainer = Color(0xFF3A2E12),
+    onTertiaryContainer = Gold,
+    background = S0,
+    onBackground = TextPrimary,
+    surface = S1,
+    onSurface = TextPrimary,
+    surfaceVariant = S2,
+    onSurfaceVariant = TextSecondary,
+    outline = Hairline,
+    outlineVariant = HairlineSoft,
+    error = RiskHighText,
+    onError = Color(0xFF2A0B10),
+    errorContainer = RiskHighContainer,
+    onErrorContainer = Color(0xFFFFD9DF),
+    inverseSurface = TextPrimary,
+    inverseOnSurface = S0,
+    inversePrimary = WineLight,
+    surfaceTint = Gold,
+    scrim = Color.Black
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = VesperWine,
+    primary = Wine,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFF5D6E4),
-    onPrimaryContainer = Color(0xFF4D1830),
-    secondary = VesperSecondary,
+    primaryContainer = Color(0xFFF5D9DE),
+    onPrimaryContainer = Color(0xFF3B0A14),
+    secondary = Color(0xFFA33A50),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFDCE0F0),
-    onSecondaryContainer = Color(0xFF1A1F2E),
-    tertiary = VesperGold,
-    onTertiary = Color(0xFF1A1508),
-    background = Color(0xFFF4F2F5),
-    onBackground = Color(0xFF121520),
-    surface = Color.White,
-    onSurface = Color(0xFF111420),
-    surfaceVariant = Color(0xFFEBE8EE),
-    onSurfaceVariant = Color(0xFF504862),
-    outline = Color(0xFF706680),
-    outlineVariant = Color(0xFFBEB4C8),
-    error = RiskHigh,
-    onError = Color.White
+    secondaryContainer = Color(0xFFF6E2E6),
+    onSecondaryContainer = Color(0xFF3B0A14),
+    tertiary = OldGold,
+    onTertiary = Color(0xFFFFF9EC),
+    tertiaryContainer = Color(0xFFF4E8CC),
+    onTertiaryContainer = Color(0xFF2A1F05),
+    background = BoneCanvas,
+    onBackground = BoneInk,
+    surface = BoneS2,
+    onSurface = BoneInk,
+    surfaceVariant = BoneS1,
+    onSurfaceVariant = BoneTextSecondary,
+    outline = BoneHairline,
+    outlineVariant = Color(0xFFF0E9E0),
+    error = Color(0xFF9E2437),
+    onError = Color.White,
+    errorContainer = Color(0xFFF9E2E6),
+    onErrorContainer = Color(0xFF3B0A14),
+    inverseSurface = BoneInk,
+    inverseOnSurface = BoneCanvas,
+    inversePrimary = WineLight,
+    surfaceTint = Wine,
+    scrim = Color.Black
 )
 
-private val VesperShapes = Shapes(
-    extraSmall = RoundedCornerShape(4.dp),
-    small = RoundedCornerShape(8.dp),
-    medium = RoundedCornerShape(12.dp),
-    large = RoundedCornerShape(16.dp),
-    extraLarge = RoundedCornerShape(20.dp)
+/** Dark canvas gradient. Kept as a value for existing call sites. */
+val VesperBackdropBrush = Brush.verticalGradient(
+    listOf(S0, Color(0xFF0B0910), Color(0xFF0D0A14), S0)
 )
 
-private val BaseTypography = androidx.compose.material3.Typography()
-
-val VesperTypography = BaseTypography.copy(
-    displayLarge = TextStyle(
-        fontFamily = FontFamily.Serif,
-        fontWeight = FontWeight.Light,
-        fontSize = 52.sp,
-        letterSpacing = 1.2.sp
-    ),
-    headlineLarge = TextStyle(
-        fontFamily = FontFamily.Serif,
-        fontWeight = FontWeight.Normal,
-        fontSize = 30.sp,
-        letterSpacing = 0.6.sp
-    ),
-    titleLarge = TextStyle(
-        fontFamily = FontFamily.Serif,
-        fontWeight = FontWeight.Normal,
-        fontSize = 21.sp,
-        letterSpacing = 0.3.sp
-    ),
-    titleMedium = TextStyle(
-        fontFamily = FontFamily.Serif,
-        fontWeight = FontWeight.Normal,
-        fontSize = 16.sp,
-        letterSpacing = 0.2.sp
-    ),
-    bodyLarge = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
-        letterSpacing = 0.15.sp
-    ),
-    bodyMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Normal,
-        fontSize = 14.sp,
-        letterSpacing = 0.1.sp
-    ),
-    labelLarge = TextStyle(
-        fontFamily = FontFamily.Monospace,
-        fontWeight = FontWeight.Medium,
-        fontSize = 12.sp,
-        letterSpacing = 1.5.sp
-    ),
-    labelMedium = TextStyle(
-        fontFamily = FontFamily.Monospace,
-        fontWeight = FontWeight.Normal,
-        fontSize = 11.sp,
-        letterSpacing = 0.6.sp
-    ),
-    labelSmall = TextStyle(
-        fontFamily = FontFamily.Monospace,
-        fontWeight = FontWeight.Normal,
-        fontSize = 10.sp,
-        letterSpacing = 0.5.sp
-    )
+/** Light canvas gradient. */
+val VesperBackdropBrushLight = Brush.verticalGradient(
+    listOf(BoneCanvas, Color(0xFFF9F5F0), Color(0xFFF5EFE8), BoneCanvas)
 )
+
+/** Resolves the canvas gradient for the active theme. */
+@Composable
+@ReadOnlyComposable
+fun vesperBackdrop(): Brush =
+    if (LocalVesperColors.current.isDark) VesperBackdropBrush else VesperBackdropBrushLight
+
+/**
+ * Access point for Vesper design tokens. Examples:
+ * Vesper.colors.textSecondary, Vesper.space.md, Vesper.motion.standard().
+ */
+object Vesper {
+    val colors: VesperColors
+        @Composable @ReadOnlyComposable get() = LocalVesperColors.current
+
+    val space: VesperSpace get() = VesperSpace
+    val motion: VesperMotion get() = VesperMotion
+}
 
 @Composable
 fun VesperTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val colors = if (darkTheme) DarkVesperColors else LightVesperColors
+    val scheme = if (darkTheme) DarkColorScheme else LightColorScheme
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = VesperTypography,
-        shapes = VesperShapes,
-        content = content
-    )
+    CompositionLocalProvider(LocalVesperColors provides colors) {
+        MaterialTheme(
+            colorScheme = scheme,
+            typography = VesperTypography,
+            shapes = VesperShapes,
+            content = content
+        )
+    }
 }

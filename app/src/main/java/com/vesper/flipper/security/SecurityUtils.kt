@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.vesper.flipper.domain.model.ProtectedPaths
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,29 +31,43 @@ class SecurityUtils @Inject constructor() {
     }
 
     /**
+     * True when [path] targets a protected area (/int, /ext/update, firmware,
+     * key material). Delegates to [ProtectedPaths] so the security layer and
+     * the risk assessor can never disagree about what "protected" means.
+     *
+     * NOTE: this is a classification helper only. Authorisation lives in
+     * [com.vesper.flipper.domain.executor.RiskAssessor] +
+     * [com.vesper.flipper.domain.service.PermissionService]; a protected path
+     * is allowed only while the user has unlocked it in Settings.
+     */
+    fun isProtectedPath(path: String): Boolean = ProtectedPaths.isProtected(path)
+
+    /**
      * Validate and sanitize a Flipper path.
      * Prevents path traversal attacks.
      *
      * @throws SecurityException if path is invalid or malicious
      */
     fun validatePath(path: String): String {
+        val candidate = path.trim()
+
         // Check for null bytes (null byte injection)
-        if (path.contains('\u0000')) {
+        if (candidate.contains('\u0000')) {
             throw SecurityException("Path contains null bytes")
         }
 
         // Check length
-        if (path.length > MAX_PATH_LENGTH) {
+        if (candidate.length > MAX_PATH_LENGTH) {
             throw SecurityException("Path exceeds maximum length")
         }
 
         // Check for empty path
-        if (path.isBlank()) {
+        if (candidate.isBlank()) {
             throw SecurityException("Path cannot be empty")
         }
 
         // Normalize the path
-        val normalized = normalizePath(path)
+        val normalized = normalizePath(candidate)
 
         // Check for path traversal attempts
         if (containsTraversal(normalized)) {

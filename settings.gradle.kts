@@ -11,6 +11,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // usb-serial-for-android is resolved from JitPack over HTTPS.
         maven("https://jitpack.io")
     }
 }

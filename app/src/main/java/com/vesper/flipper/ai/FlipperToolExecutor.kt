@@ -6,6 +6,8 @@ import android.net.Uri
 import com.vesper.flipper.ble.BleServiceManager
 import com.vesper.flipper.ble.FlipperFileSystem
 import com.vesper.flipper.domain.model.PayloadType
+import com.vesper.flipper.domain.model.ProtectedPaths
+import com.vesper.flipper.domain.service.PermissionService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -24,8 +26,28 @@ import javax.inject.Singleton
 @Singleton
 class FlipperToolExecutor @Inject constructor(
     private val flipperFileSystem: FlipperFileSystem,
-    private val bleServiceManager: BleServiceManager
+    private val bleServiceManager: BleServiceManager,
+    private val permissionService: PermissionService
 ) {
+
+    /**
+     * Tool calls reach the device without going through CommandExecutor, so the
+     * protected-path rule is enforced here as well: /int, /ext/update and key
+     * material stay blocked until the user unlocks them in Settings.
+     */
+    private fun protectedPathError(path: String): String? {
+        if (!ProtectedPaths.isProtected(path)) return null
+        if (permissionService.isProtectedPathUnlocked(path)) return null
+        return "Blocked: ${ProtectedPaths.protectedReason(path)}. Unlock the path in Settings first."
+    }
+
+    /** Same rule for raw CLI commands: any absolute path argument is checked. */
+    private fun protectedCliError(command: String): String? {
+        val paths = command.split(Regex("\\s+"))
+            .map { it.trim('"', '\'', ',') }
+            .filter { it.startsWith("/") }
+        return paths.firstNotNullOfOrNull { protectedPathError(it) }
+    }
 
     // ============================================================
     // FILE OPERATIONS
@@ -39,6 +61,7 @@ class FlipperToolExecutor @Inject constructor(
         content: String,
         createDirectories: Boolean = true
     ): ToolResult = withContext(Dispatchers.IO) {
+        protectedPathError(path)?.let { return@withContext ToolResult.Error(it) }
         try {
             // Extract directory path and create if needed
             if (createDirectories) {
@@ -93,6 +116,8 @@ class FlipperToolExecutor @Inject constructor(
         val dir = "/ext/apps_data/evil_portal/portals/$sanitizedName"
         val indexPath = "$dir/index.html"
 
+        protectedPathError(indexPath)?.let { return@withContext ToolResult.Error(it) }
+
         try {
             // Create portal directory
             flipperFileSystem.createDirectory(dir)
@@ -124,6 +149,7 @@ class FlipperToolExecutor @Inject constructor(
      * Execute a CLI command on the Flipper
      */
     suspend fun executeFlipperCommand(command: String): ToolResult = withContext(Dispatchers.IO) {
+        protectedCliError(command)?.let { return@withContext ToolResult.Error(it) }
         try {
             bleServiceManager.awaitConnectedService()
                 ?: return@withContext ToolResult.Error(

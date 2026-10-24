@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <include domain="sharedpref" path="."/>
-    <exclude domain="sharedpref" path="api_key_prefs.xml"/>
+
+    <!-- DataStore holds the OpenRouter key (encrypted, or the legacy
+         plaintext fallback when the Keystore is unavailable) plus the app
+         settings. Never copy it off the device. -->
+    <exclude domain="file" path="datastore/vesper_settings.preferences_pb"/>
+    <exclude domain="file" path="datastore/"/>
+
+    <!-- EncryptedSharedPreferences ciphertext is useless without the
+         Android Keystore key, which is never backed up. Excluding the file
+         prevents undecryptable data from being restored on another device. -->
+    <exclude domain="sharedpref" path="vesper_secure_prefs.xml"/>
 </full-backup-content>

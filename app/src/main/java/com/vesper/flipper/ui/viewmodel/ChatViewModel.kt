@@ -10,28 +10,79 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vesper.flipper.ai.VesperAgent
+import com.vesper.flipper.ble.BleServiceManager
 import com.vesper.flipper.ble.ConnectionState
-import com.vesper.flipper.ble.FlipperBleService
-import com.vesper.flipper.ble.FlipperDevice
+import com.vesper.flipper.data.SettingsStore
 import com.vesper.flipper.data.database.ChatSessionSummary
 import com.vesper.flipper.domain.model.*
-import com.vesper.flipper.data.SettingsStore
-import com.vesper.flipper.voice.OpenRouterTtsService
 import com.vesper.flipper.glasses.BridgeState
 import com.vesper.flipper.glasses.GlassesIntegration
-import com.vesper.flipper.glasses.GlassesMessage
 import com.vesper.flipper.glasses.MessageType
+import com.vesper.flipper.voice.OpenRouterTtsService
 import com.vesper.flipper.voice.SpeechRecognitionHelper
 import com.vesper.flipper.voice.SpeechState
 import com.vesper.flipper.voice.TtsState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
+
+/**
+ * Voice capture phase, flattened for the UI.
+ *
+ * [SpeechState.Result] folds into [IDLE] because the transcript is already
+ * appended to the input field by the time the screen sees it.
+ */
+enum class ChatVoiceState { IDLE, LISTENING, PROCESSING }
+
+/**
+ * One immutable snapshot of everything chat needs to draw.
+ *
+ * The screen collects this exactly once. Before this existed, ten separate
+ * collectAsState calls at the screen root meant every partial voice transcript
+ * recomposed the whole message list.
+ */
+data class ChatUiState(
+    val isReady: Boolean = false,
+    val messages: List<ChatMessage> = emptyList(),
+    val isLoading: Boolean = false,
+    val progress: AgentProgress? = null,
+    val error: String? = null,
+    val pendingApproval: PendingApproval? = null,
+    val sessionId: String = "",
+    val input: String = "",
+    val pendingImages: List<ImageAttachment> = emptyList(),
+    val isProcessingImage: Boolean = false,
+    val imageError: String? = null,
+    val voiceState: ChatVoiceState = ChatVoiceState.IDLE,
+    val voicePartialText: String = "",
+    val voiceError: String? = null,
+    val ttsSpeakingId: String? = null,
+    val ttsLoading: Boolean = false,
+    val deviceName: String? = null,
+    val hasDevice: Boolean = false,
+    val hasApiKey: Boolean = false,
+    val glassesConnected: Boolean = false,
+    val glassesMuted: Boolean = false,
+    /** True only while a model/tool turn is cancellable (not during approval execution). */
+    val canStop: Boolean = false,
+    /** Set when the user stops a turn, so the list can offer Retry without an error. */
+    val turnStopped: Boolean = false
+)
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
@@ -39,6 +90,7 @@ class ChatViewModel @Inject constructor(
     private val ttsService: OpenRouterTtsService,
     private val settingsStore: SettingsStore,
     private val glassesIntegration: GlassesIntegration,
+    private val bleServiceManager: BleServiceManager,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -73,6 +125,101 @@ class ChatViewModel @Inject constructor(
     // Smart glasses bridge state
     val glassesBridgeState: StateFlow<BridgeState> = glassesIntegration.bridgeState
 
+    // ── Turn lifecycle ───────────────────────────────────────
+    private var agentTurnJob: Job? = null
+    /** Invalidates a stale turn's finally block after a fast Stop then Send. */
+    private var turnSequence = 0L
+    private val _canStop = MutableStateFlow(false)
+    private val _turnStopped = MutableStateFlow(false)
+    /** Local safety net: hides loading if the agent reset ever fails after a Stop. */
+    private val _cancelledTurn = MutableStateFlow(false)
+    private val _ttsSpeakingId = MutableStateFlow<String?>(null)
+
+    private val inputUi: Flow<InputUi> = combine(
+        _inputText,
+        _pendingImages,
+        _isProcessingImage,
+        _imageError
+    ) { text, images, processing, error ->
+        InputUi(text, images, processing, error)
+    }
+
+    private val voiceUi: Flow<VoiceUi> = combine(
+        speechRecognitionHelper.state,
+        speechRecognitionHelper.partialResult,
+        _voiceError
+    ) { state, partial, error ->
+        VoiceUi(state.toChatVoiceState(), partial, error)
+    }
+
+    private val ttsUi: Flow<TtsUi> = combine(ttsService.state, _ttsSpeakingId) { state, speakingId ->
+        TtsUi(speakingId = speakingId, loading = state is TtsState.Loading)
+    }
+
+    private val turnUi: Flow<TurnUi> = combine(_canStop, _turnStopped, _cancelledTurn) { canStop, stopped, cancelled ->
+        TurnUi(canStop = canStop, stopped = stopped, cancelled = cancelled)
+    }
+
+    private val environmentUi: Flow<EnvironmentUi> = combine(
+        bleServiceManager.connectionState,
+        settingsStore.apiKey,
+        glassesIntegration.bridgeState,
+        settingsStore.glassesMuted.catch { emit(false) },
+        turnUi
+    ) { connection, apiKey, bridge, glassesMuted, turn ->
+        EnvironmentUi(
+            deviceName = (connection as? ConnectionState.Connected)?.deviceName,
+            hasApiKey = !apiKey.isNullOrBlank(),
+            glassesConnected = bridge is BridgeState.Connected,
+            glassesMuted = glassesMuted,
+            canStop = turn.canStop,
+            turnStopped = turn.stopped,
+            turnCancelled = turn.cancelled
+        )
+    }
+
+    /**
+     * The single state the chat screen collects. The individual StateFlows
+     * above stay public so other consumers keep working.
+     */
+    val uiState: StateFlow<ChatUiState> = combine(
+        conversationState,
+        inputUi,
+        voiceUi,
+        ttsUi,
+        environmentUi
+    ) { conversation, input, voice, tts, environment ->
+        ChatUiState(
+            isReady = true,
+            messages = conversation.messages,
+            isLoading = conversation.isLoading && !environment.turnCancelled,
+            progress = if (environment.turnCancelled) null else conversation.progress,
+            error = conversation.error,
+            pendingApproval = if (environment.turnCancelled) null else conversation.pendingApproval,
+            sessionId = conversation.sessionId,
+            input = input.text,
+            pendingImages = input.images,
+            isProcessingImage = input.processing,
+            imageError = input.error,
+            voiceState = voice.mode,
+            voicePartialText = voice.partial,
+            voiceError = voice.error,
+            ttsSpeakingId = tts.speakingId,
+            ttsLoading = tts.loading,
+            deviceName = environment.deviceName,
+            hasDevice = environment.deviceName != null,
+            hasApiKey = environment.hasApiKey,
+            glassesConnected = environment.glassesConnected,
+            glassesMuted = environment.glassesMuted,
+            canStop = environment.canStop,
+            turnStopped = environment.turnStopped
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000L),
+        initialValue = ChatUiState()
+    )
+
     init {
         // Listen for voice recognition results
         viewModelScope.launch {
@@ -98,6 +245,24 @@ class ChatViewModel @Inject constructor(
             }
         }
 
+        // Drop the local stop override once the agent reports a settled turn.
+        viewModelScope.launch {
+            conversationState.collect { state ->
+                if (!state.isLoading && _cancelledTurn.value) {
+                    _cancelledTurn.value = false
+                }
+            }
+        }
+
+        // TTS bookkeeping so the message list can show which bubble is speaking.
+        viewModelScope.launch {
+            ttsService.state.collect { state ->
+                if (state is TtsState.Idle || state is TtsState.Error) {
+                    _ttsSpeakingId.value = null
+                }
+            }
+        }
+
         // Auto-speak: watch for new completed assistant messages
         viewModelScope.launch {
             var lastMessageCount = 0
@@ -115,7 +280,7 @@ class ChatViewModel @Inject constructor(
                         val ttsEnabled = settingsStore.ttsEnabled.first()
                         val glassesActive = glassesIntegration.isConnected()
                         if (autoSpeak && ttsEnabled && !glassesActive) {
-                            speakText(lastMsg.content)
+                            speakMessage(lastMsg.id, lastMsg.content)
                         }
                     }
                 }
@@ -136,7 +301,7 @@ class ChatViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 // Don't let a bad bridge URL crash the app on startup
-                android.util.Log.w("ChatViewModel", "Glasses auto-connect failed: ${e.message}")
+                Log.w(TAG, "Glasses auto-connect failed: " + (e.message ?: "unknown"))
             }
         }
 
@@ -219,6 +384,14 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Speak a specific message so the bubble can show a speaking state.
+     */
+    fun speakMessage(messageId: String, text: String) {
+        _ttsSpeakingId.value = messageId
+        speakText(text)
+    }
+
     // ==================== Smart Glasses ====================
 
     /**
@@ -232,7 +405,7 @@ class ChatViewModel @Inject constructor(
                 settingsStore.setGlassesBridgeUrl(bridgeUrl)
                 glassesIntegration.connect(bridgeUrl)
             } catch (e: Exception) {
-                android.util.Log.w("ChatViewModel", "Glasses connect failed: ${e.message}")
+                Log.w(TAG, "Glasses connect failed: " + (e.message ?: "unknown"))
             }
         }
     }
@@ -251,6 +424,7 @@ class ChatViewModel @Inject constructor(
 
     // Glasses mic mute — exposed for quick toggle in chat UI
     val glassesMuted: StateFlow<Boolean> = settingsStore.glassesMuted
+        .catch { emit(false) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     fun toggleGlassesMute() {
@@ -264,6 +438,7 @@ class ChatViewModel @Inject constructor(
      * Stop current TTS playback
      */
     fun stopSpeaking() {
+        _ttsSpeakingId.value = null
         ttsService.stop()
     }
 
@@ -299,12 +474,12 @@ class ChatViewModel @Inject constructor(
                         _pendingImages.value = _pendingImages.value + attachment
                     }
                 } else {
-                    Log.e(TAG, "processImageUri returned null for $uri")
-                    _imageError.value = "Failed to process image"
+                    Log.e(TAG, "processImageUri returned null for " + uri)
+                    _imageError.value = "Could not read that image"
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "addImage failed for $uri", e)
-                _imageError.value = "Image error: ${e.message?.take(60) ?: "unknown"}"
+                Log.e(TAG, "addImage failed for " + uri, e)
+                _imageError.value = "Image error: " + (e.message?.take(60) ?: "unknown")
             } finally {
                 _isProcessingImage.value = false
             }
@@ -397,11 +572,11 @@ class ChatViewModel @Inject constructor(
 
             result
         } catch (e: OutOfMemoryError) {
-            Log.e(TAG, "OOM processing image: $uri", e)
+            Log.e(TAG, "OOM processing image: " + uri, e)
             System.gc()
             null
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to process image: $uri", e)
+            Log.e(TAG, "Failed to process image: " + uri, e)
             null
         } finally {
             // Always recycle bitmaps to free native memory
@@ -487,50 +662,90 @@ class ChatViewModel @Inject constructor(
 
         // Allow sending if there's text OR images
         if (message.isEmpty() && images.isEmpty()) return
+        if (agentTurnJob?.isActive == true) return
 
         _inputText.value = ""
         _pendingImages.value = emptyList()
+        _turnStopped.value = false
+        _cancelledTurn.value = false
         glassesIntegration.clearPendingPhoto() // Clear glasses hold timer
 
-        viewModelScope.launch {
+        val turnId = ++turnSequence
+        _canStop.value = true
+        agentTurnJob = viewModelScope.launch {
             try {
                 vesperAgent.sendMessage(
                     userMessage = message,
                     imageAttachments = images.ifEmpty { null }
                 )
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
                 // VesperAgent.sendMessage() has its own try-catch that resets
                 // isLoading. This outer catch handles truly unexpected errors
                 // (e.g. serialization bugs) so the user sees feedback.
                 Log.e(TAG, "sendMessage failed", e)
-                _imageError.value = "Failed to send: ${e.message?.take(80) ?: "unknown error"}"
+                _imageError.value = "Could not send: " + (e.message?.take(80) ?: "unknown error")
+            } finally {
+                finishTurn(turnId)
             }
         }
     }
 
-    private var retryInFlight = false
-
     fun retryLastMessage() {
-        if (retryInFlight) return
-        retryInFlight = true
-        viewModelScope.launch {
+        if (agentTurnJob?.isActive == true) return
+        _turnStopped.value = false
+        _cancelledTurn.value = false
+        val turnId = ++turnSequence
+        _canStop.value = true
+        agentTurnJob = viewModelScope.launch {
             try {
                 vesperAgent.retryLastMessage()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e(TAG, "retryLastMessage failed", e)
-                _imageError.value = "Retry failed: ${e.message?.take(80) ?: "unknown error"}"
+                _imageError.value = "Retry failed: " + (e.message?.take(80) ?: "unknown error")
             } finally {
-                retryInFlight = false
+                finishTurn(turnId)
             }
         }
+    }
+
+    private fun finishTurn(turnId: Long) {
+        // A newer turn may already own the slot; never clear its state.
+        if (turnId == turnSequence) {
+            _canStop.value = false
+            agentTurnJob = null
+        }
+    }
+
+    /**
+     * Stop the in-flight model/tool turn. The last user message is kept so the
+     * turn can be retried; [turnStopped] drives the Retry affordance.
+     */
+    fun cancel() {
+        val job = agentTurnJob ?: return
+        agentTurnJob = null
+        job.cancel()
+        _canStop.value = false
+        _turnStopped.value = true
+        _cancelledTurn.value = true
+        viewModelScope.launch {
+            runCatching { vesperAgent.cancelCurrentTurn() }
+        }
+    }
+
+    fun dismissStoppedTurn() {
+        _turnStopped.value = false
     }
 
     fun approveAction(approvalId: String? = null) {
         if (approvalDecisionInFlight) return
         val targetApprovalId = approvalId ?: conversationState.value.pendingApproval?.id ?: return
         approvalDecisionInFlight = true
+        _turnStopped.value = false
+        _cancelledTurn.value = false
         viewModelScope.launch {
             try {
                 vesperAgent.continueAfterApproval(targetApprovalId, approved = true)
@@ -544,6 +759,8 @@ class ChatViewModel @Inject constructor(
         if (approvalDecisionInFlight) return
         val targetApprovalId = approvalId ?: conversationState.value.pendingApproval?.id ?: return
         approvalDecisionInFlight = true
+        _turnStopped.value = false
+        _cancelledTurn.value = false
         viewModelScope.launch {
             try {
                 vesperAgent.continueAfterApproval(targetApprovalId, approved = false)
@@ -554,13 +771,29 @@ class ChatViewModel @Inject constructor(
     }
 
     fun clearConversation() {
+        cancelActiveTurn()
         _pendingImages.value = emptyList()
+        _turnStopped.value = false
+        _cancelledTurn.value = false
         vesperAgent.clearConversation()
     }
 
     fun startNewSession(deviceName: String? = null) {
+        cancelActiveTurn()
         _pendingImages.value = emptyList()
+        _turnStopped.value = false
+        _cancelledTurn.value = false
         vesperAgent.startNewSession(deviceName)
+    }
+
+    private fun cancelActiveTurn() {
+        val job = agentTurnJob ?: return
+        agentTurnJob = null
+        job.cancel()
+        _canStop.value = false
+        viewModelScope.launch {
+            runCatching { vesperAgent.cancelCurrentTurn() }
+        }
     }
 
     val sessionHistory: StateFlow<List<ChatSessionSummary>> =
@@ -568,14 +801,64 @@ class ChatViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun loadSession(sessionId: String) {
+        cancelActiveTurn()
+        _turnStopped.value = false
+        _cancelledTurn.value = false
         viewModelScope.launch {
             vesperAgent.loadSession(sessionId)
         }
     }
 
     fun deleteSession(sessionId: String) {
+        // Deleting the live conversation must not leave a turn writing into the
+        // new session the agent starts afterwards.
+        if (sessionId == conversationState.value.sessionId) {
+            cancelActiveTurn()
+            _turnStopped.value = false
+            _cancelledTurn.value = false
+        }
         viewModelScope.launch {
             vesperAgent.deleteSession(sessionId)
         }
     }
+
+    private fun SpeechState.toChatVoiceState(): ChatVoiceState = when (this) {
+        is SpeechState.Listening -> ChatVoiceState.LISTENING
+        is SpeechState.Processing -> ChatVoiceState.PROCESSING
+        else -> ChatVoiceState.IDLE
+    }
+
+    private data class InputUi(
+        val text: String,
+        val images: List<ImageAttachment>,
+        val processing: Boolean,
+        val error: String?
+    )
+
+    private data class VoiceUi(
+        val mode: ChatVoiceState,
+        val partial: String,
+        val error: String?
+    )
+
+    private data class TtsUi(
+        val speakingId: String?,
+        val loading: Boolean
+    )
+
+    private data class TurnUi(
+        val canStop: Boolean,
+        val stopped: Boolean,
+        val cancelled: Boolean
+    )
+
+    private data class EnvironmentUi(
+        val deviceName: String?,
+        val hasApiKey: Boolean,
+        val glassesConnected: Boolean,
+        val glassesMuted: Boolean,
+        val canStop: Boolean,
+        val turnStopped: Boolean,
+        val turnCancelled: Boolean
+    )
 }

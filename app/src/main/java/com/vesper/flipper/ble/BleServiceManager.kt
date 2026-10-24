@@ -49,11 +49,15 @@ class BleServiceManager @Inject constructor(
     private val _cliCapabilityStatus = MutableStateFlow(CliCapabilityStatus())
     val cliCapabilityStatus: StateFlow<CliCapabilityStatus> = _cliCapabilityStatus.asStateFlow()
 
+    private val _connectionHealth = MutableStateFlow(ConnectionHealth())
+    val connectionHealth: StateFlow<ConnectionHealth> = _connectionHealth.asStateFlow()
+
     private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var connectionStateJob: Job? = null
     private var discoveredDevicesJob: Job? = null
     private var connectedDeviceJob: Job? = null
     private var cliCapabilityJob: Job? = null
+    private var connectionHealthJob: Job? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -73,6 +77,7 @@ class BleServiceManager @Inject constructor(
             _discoveredDevices.value = emptyList()
             _connectedDevice.value = null
             _cliCapabilityStatus.value = CliCapabilityStatus()
+            _connectionHealth.value = ConnectionHealth()
         }
     }
 
@@ -81,14 +86,24 @@ class BleServiceManager @Inject constructor(
     }
 
     /**
-     * Start and bind to the BLE service
+     * Bind to the BLE service.
+     *
+     * Binding deliberately does not start a foreground service and posts no
+     * notification: the service only promotes itself when the user starts a scan
+     * or a connection. BIND_AUTO_CREATE keeps an idle instance cheap.
      */
     fun bindService() {
         if (_isServiceBound.value || isBinding) return
         isBinding = true
-        FlipperBleService.startService(context)
-        Intent(context, FlipperBleService::class.java).also { intent ->
-            context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        val bound = runCatching {
+            context.bindService(
+                Intent(context, FlipperBleService::class.java),
+                serviceConnection,
+                Context.BIND_AUTO_CREATE
+            )
+        }.getOrDefault(false)
+        if (!bound) {
+            isBinding = false
         }
     }
 
@@ -98,11 +113,12 @@ class BleServiceManager @Inject constructor(
     fun unbindService() {
         if (_isServiceBound.value) {
             cancelServiceCollectors()
-            context.unbindService(serviceConnection)
+            runCatching { context.unbindService(serviceConnection) }
             _isServiceBound.value = false
         }
         _service = null
         isBinding = false
+        _connectionHealth.value = ConnectionHealth()
     }
 
     /**
@@ -121,10 +137,11 @@ class BleServiceManager @Inject constructor(
     }
 
     /**
-     * Stop scanning
+     * Stop scanning. Dispatched off the caller thread because it performs a
+     * Bluetooth scanner binder call and may tear the service down.
      */
     fun stopScanning() {
-        _service?.stopScan()
+        managerScope.launch { _service?.stopScan() }
     }
 
     /**
@@ -196,6 +213,9 @@ class BleServiceManager @Inject constructor(
         cliCapabilityJob = managerScope.launch {
             service.cliCapabilityStatus.collect { _cliCapabilityStatus.value = it }
         }
+        connectionHealthJob = managerScope.launch {
+            service.connectionHealth.collect { _connectionHealth.value = it }
+        }
     }
 
     private fun cancelServiceCollectors() {
@@ -203,10 +223,12 @@ class BleServiceManager @Inject constructor(
         discoveredDevicesJob?.cancel()
         connectedDeviceJob?.cancel()
         cliCapabilityJob?.cancel()
+        connectionHealthJob?.cancel()
         connectionStateJob = null
         discoveredDevicesJob = null
         connectedDeviceJob = null
         cliCapabilityJob = null
+        connectionHealthJob = null
     }
 
     suspend fun awaitService(timeoutMs: Long = DEFAULT_BIND_TIMEOUT_MS): FlipperBleService? {

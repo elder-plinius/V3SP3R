@@ -3,6 +3,7 @@ package com.vesper.flipper.domain.service
 import com.vesper.flipper.domain.model.CommandAction
 import com.vesper.flipper.domain.model.Permission
 import com.vesper.flipper.domain.model.PermissionRequest
+import com.vesper.flipper.domain.model.ProtectedPaths
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,11 +14,18 @@ import javax.inject.Singleton
 /**
  * Manages path-based permissions for file operations.
  * Permissions are scoped, time-limited, and explicitly granted.
+ *
+ * Protected paths (/int, /ext/update, key material) are separate from regular
+ * permissions: they are locked by default and only the user can unlock them
+ * from Settings. Unlock state is exposed as [unlockedPaths] so the Settings
+ * screen can render it without polling.
  */
 @Singleton
 class PermissionService @Inject constructor() {
 
     private val permissions = ConcurrentHashMap<String, Permission>()
+
+    /** Canonical protected root -> epoch millis expiry. */
     private val unlockedProtectedPaths = ConcurrentHashMap<String, Long>()
     private val pendingRequests = ConcurrentHashMap<String, PermissionRequest>()
 
@@ -26,6 +34,14 @@ class PermissionService @Inject constructor() {
 
     private val _pendingRequest = MutableStateFlow<PermissionRequest?>(null)
     val pendingRequest: StateFlow<PermissionRequest?> = _pendingRequest.asStateFlow()
+
+    /**
+     * Canonical protected paths that are currently unlocked, in unlock order.
+     * Empty by default; updates whenever the user unlocks/locks a path or an
+     * unlock expires.
+     */
+    private val _unlockedPaths = MutableStateFlow<List<String>>(emptyList())
+    val unlockedPaths: StateFlow<List<String>> = _unlockedPaths.asStateFlow()
 
     /**
      * Check if an action on a path is permitted
@@ -83,38 +99,85 @@ class PermissionService @Inject constructor() {
     }
 
     /**
-     * Revoke all permissions
+     * Revoke all permissions and relock every protected path.
      */
     fun revokeAll() {
         permissions.clear()
         unlockedProtectedPaths.clear()
         updateActivePermissions()
+        publishUnlockedPaths()
     }
 
     /**
-     * Check if a protected path has been unlocked in settings
+     * Check if a protected path has been unlocked in settings.
+     *
+     * Matching is root-aware: unlocking `/int` also unlocks `/int/settings.txt`,
+     * because users unlock a protected *area*, not every individual file.
      */
     fun isProtectedPathUnlocked(path: String): Boolean {
-        val expiry = unlockedProtectedPaths[path] ?: return false
-        if (System.currentTimeMillis() > expiry) {
-            unlockedProtectedPaths.remove(path)
-            return false
+        val canonicalPath = ProtectedPaths.canonical(path)
+        val now = System.currentTimeMillis()
+
+        var unlocked = false
+        var expired = false
+        for ((root, expiry) in unlockedProtectedPaths) {
+            if (expiry < now) {
+                expired = true
+                unlockedProtectedPaths.remove(root, expiry)
+                continue
+            }
+            if (ProtectedPaths.isWithin(canonicalPath, root)) {
+                unlocked = true
+            }
         }
-        return true
+        // Keep the published snapshot honest after lazy expiry removal.
+        if (expired) publishUnlockedPaths()
+        return unlocked
     }
 
+    /** Suspend-friendly alias for UI call sites that already run in a coroutine. */
+    suspend fun isUnlocked(path: String): Boolean = isProtectedPathUnlocked(path)
+
     /**
-     * Unlock a protected path (from settings)
+     * Unlock a protected path (called from Settings).
+     * @param path protected root or any path inside it.
+     * @param duration lifetime of the unlock; [Permission.DURATION_1_HOUR] by default.
      */
     fun unlockProtectedPath(path: String, duration: Long = Permission.DURATION_1_HOUR) {
-        unlockedProtectedPaths[path] = System.currentTimeMillis() + duration
+        val canonicalPath = ProtectedPaths.canonical(path)
+        if (!ProtectedPaths.isProtected(canonicalPath) && canonicalPath != ProtectedPaths.INTERNAL_ROOT) {
+            return
+        }
+        unlockedProtectedPaths[canonicalPath] = System.currentTimeMillis() + duration
+        publishUnlockedPaths()
     }
 
     /**
-     * Lock a protected path
+     * Lock a protected path.
+     * @param path protected root to relock; descendants unlocked separately are kept.
      */
     fun lockProtectedPath(path: String) {
-        unlockedProtectedPaths.remove(path)
+        unlockedProtectedPaths.remove(ProtectedPaths.canonical(path))
+        publishUnlockedPaths()
+    }
+
+    /** Lock every protected path at once (panic switch). */
+    fun lockAllProtectedPaths() {
+        unlockedProtectedPaths.clear()
+        publishUnlockedPaths()
+    }
+
+    /** Remaining unlock time in milliseconds for [path], or null when locked. */
+    fun remainingUnlockMs(path: String): Long? {
+        if (!isProtectedPathUnlocked(path)) return null
+        val canonicalPath = ProtectedPaths.canonical(path)
+        val now = System.currentTimeMillis()
+        val best = unlockedProtectedPaths
+            .filterKeys { ProtectedPaths.isWithin(canonicalPath, it) }
+            .values
+            .maxOrNull()
+            ?: return null
+        return (best - now).coerceAtLeast(0)
     }
 
     /**
@@ -164,7 +227,24 @@ class PermissionService @Inject constructor() {
     private fun cleanupExpired() {
         val now = System.currentTimeMillis()
         permissions.entries.removeIf { !it.value.isValid() }
-        unlockedProtectedPaths.entries.removeIf { it.value < now }
+
+        var removedUnlock = false
+        for ((root, expiry) in unlockedProtectedPaths) {
+            if (expiry < now) {
+                unlockedProtectedPaths.remove(root, expiry)
+                removedUnlock = true
+            }
+        }
+        if (removedUnlock) publishUnlockedPaths()
+    }
+
+    private fun publishUnlockedPaths() {
+        val now = System.currentTimeMillis()
+        val snapshot = unlockedProtectedPaths
+            .filterValues { it > now }
+            .keys
+            .sorted()
+        _unlockedPaths.value = snapshot
     }
 
     private fun updateActivePermissions() {

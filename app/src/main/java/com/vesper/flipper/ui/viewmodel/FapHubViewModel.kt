@@ -63,23 +63,28 @@ class FapHubViewModel @Inject constructor(
     private val _selectedApp = MutableStateFlow<FapApp?>(null)
     val selectedApp: StateFlow<FapApp?> = _selectedApp.asStateFlow()
 
+    /** Apps after search, category, install state, and sort. One filter chain. */
     val displayedApps: StateFlow<List<FapApp>> = combine(
         _searchQuery, _selectedCategory, _sortBy, _installedApps
     ) { query, category, sort, installed ->
-        var apps = FapHubCatalog.allApps
-        if (category != null) apps = apps.filter { it.category == category }
-        if (query.isNotEmpty()) {
-            apps = FapHubCatalog.searchApps(query).let { results ->
-                if (category != null) results.filter { it.category == category } else results
+        val trimmed = query.trim()
+        val filtered = FapHubCatalog.allApps.asSequence()
+            .filter { category == null || it.category == category }
+            .filter { app ->
+                trimmed.isEmpty() ||
+                    app.name.contains(trimmed, ignoreCase = true) ||
+                    app.description.contains(trimmed, ignoreCase = true) ||
+                    app.author.contains(trimmed, ignoreCase = true)
             }
-        }
-        apps = apps.map { it.copy(isInstalled = installed.contains(it.id)) }
+            .map { app -> app.copy(isInstalled = installed.contains(app.id)) }
+            .toList()
+
         when (sort) {
-            SortOption.DOWNLOADS -> apps.sortedByDescending { it.downloads }
-            SortOption.RATING -> apps.sortedByDescending { it.rating }
-            SortOption.NAME -> apps.sortedBy { it.name }
-            SortOption.UPDATED -> apps.sortedByDescending { it.updatedAt }
-            SortOption.CATEGORY -> apps.sortedBy { it.category.displayName }
+            SortOption.DOWNLOADS -> filtered.sortedByDescending { it.downloads }
+            SortOption.RATING -> filtered.sortedByDescending { it.rating }
+            SortOption.NAME -> filtered.sortedBy { it.name }
+            SortOption.UPDATED -> filtered.sortedByDescending { it.updatedAt }
+            SortOption.CATEGORY -> filtered.sortedBy { it.category.displayName }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), FapHubCatalog.allApps)
 
@@ -261,9 +266,9 @@ class FapHubViewModel @Inject constructor(
 }
 
 enum class SortOption(val displayName: String) {
-    DOWNLOADS("Most Popular"),
-    RATING("Highest Rated"),
+    DOWNLOADS("Most popular"),
+    RATING("Highest rated"),
     NAME("Alphabetical"),
-    UPDATED("Recently Updated"),
-    CATEGORY("By Category")
+    UPDATED("Recently updated"),
+    CATEGORY("By category")
 }

@@ -20,13 +20,15 @@ val localProps = Properties().apply {
 android {
     namespace = "com.vesper.flipper"
     compileSdk = 35
+    // NOTE: compileSdk/targetSdk intentionally stay at 35. SDK 36 is blocked
+    // until Android SDK Platform 36 is installable in this offline environment.
 
     defaultConfig {
         applicationId = "com.vesper.flipper"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -51,11 +53,22 @@ android {
                 keyPassword = localProps.getProperty("RELEASE_KEY_PASSWORD")
             }
         }
+    } else {
+        // Fail-open: release assemblies still succeed, but an unsigned release
+        // APK must never be shipped silently.
+        project.logger.warn(
+            "Vesper: release signing is not configured; release builds will be UNSIGNED. " +
+                "Set RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS and " +
+                "RELEASE_KEY_PASSWORD in local.properties to sign releases.",
+        )
     }
 
     buildTypes {
         debug {
-            // Debug builds: no minification, fast iteration
+            // Debug builds: no minification, fast iteration.
+            // Same applicationId as release on purpose: installing a new debug
+            // build upgrades the existing app (settings, key, chat history)
+            // instead of creating a second, empty copy.
             isMinifyEnabled = false
         }
         release {
@@ -85,11 +98,44 @@ android {
         buildConfig = true
     }
 
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    testOptions {
+        unitTests {
+            // JVM tests exercise Android APIs; return safe defaults instead of
+            // throwing "not mocked" at runtime.
+            isReturnDefaultValues = true
         }
     }
+
+    lint {
+        // Lint runs in CI but does not fail the build on existing lint debt.
+        // The report is uploaded as an artifact; flip abortOnError to true once
+        // the checked-in baseline is clean.
+        abortOnError = false
+        warningsAsErrors = false
+        checkReleaseBuilds = true
+    }
+
+    packaging {
+        resources {
+            // Avoid duplicate license/notice files contributed by multiple
+            // dependencies when merging APK resources.
+            excludes += listOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "/META-INF/LICENSE*",
+                "/META-INF/NOTICE*",
+                "/META-INF/DEPENDENCIES",
+            )
+        }
+    }
+
+    sourceSets {
+        // Room exports schema JSON files here for migration review/testing.
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -139,13 +185,11 @@ dependencies {
 
     // Coil (image loading + video frame thumbnails)
     implementation("io.coil-kt:coil-compose:2.5.0")
-    implementation("io.coil-kt:coil-video:2.5.0")
 
     // Accompanist
-    implementation("com.google.accompanist:accompanist-drawablepainter:0.32.0")
 
     // USB Serial
-    implementation("com.github.mik3y:usb-serial-for-android:3.8.1")
+    implementation("com.github.mik3y:usb-serial-for-android:3.11.0")
 
     // Security / Encrypted SharedPrefs
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
@@ -155,4 +199,10 @@ dependencies {
 
     // Diff utils
     implementation("io.github.java-diff-utils:java-diff-utils:4.12")
+
+    // Unit tests (JVM)
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:6.4.0")
+    testImplementation("org.mockito:mockito-core:5.24.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
 }

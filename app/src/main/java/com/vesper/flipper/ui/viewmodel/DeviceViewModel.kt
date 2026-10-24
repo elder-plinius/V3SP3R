@@ -152,6 +152,15 @@ class DeviceViewModel @Inject constructor(
         bleServiceManager.stopScanning()
     }
 
+    /** One entry point for the scan/stop control in the connection card. */
+    fun toggleScan() {
+        if (_connectionState.value is ConnectionState.Scanning) {
+            stopScan()
+        } else {
+            startScan()
+        }
+    }
+
     fun connectToDevice(device: FlipperDevice) {
         bleServiceManager.connect(device)
     }

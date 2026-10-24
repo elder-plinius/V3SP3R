@@ -1,358 +1,230 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-
 package com.vesper.flipper.ui.screen
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.vesper.flipper.domain.model.*
-import com.vesper.flipper.ui.theme.*
+import com.vesper.flipper.ui.components.VErrorBanner
+import com.vesper.flipper.ui.components.VesperScaffold
+import com.vesper.flipper.ui.screen.signals.ArsenalSearchField
+import com.vesper.flipper.ui.screen.signals.ArsenalTypeFilters
+import com.vesper.flipper.ui.screen.signals.CaptureDetailPane
+import com.vesper.flipper.ui.screen.signals.CaptureListPane
+import com.vesper.flipper.ui.screen.signals.EmptyDetailPane
+import com.vesper.flipper.ui.theme.Vesper
+import com.vesper.flipper.ui.theme.VesperSpace
+import com.vesper.flipper.ui.viewmodel.ArsenalErrorSource
+import com.vesper.flipper.ui.viewmodel.SignalArsenalUiState
 import com.vesper.flipper.ui.viewmodel.SignalArsenalViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
+private val TwoPaneBreakpoint = 600.dp
+
+/**
+ * Signal library.
+ *
+ * Captures are filtered by type and search, then opened in a detail pane
+ * that stays beside the list on wide windows and replaces it on phones.
+ */
 @Composable
 fun SignalArsenalScreen(
+    onNavigateBack: () -> Unit = {},
+    onNavigateToDevice: () -> Unit = {},
     viewModel: SignalArsenalViewModel = hiltViewModel()
 ) {
-    val selectedType by viewModel.selectedType.collectAsState()
-    val signals by viewModel.filteredSignals.collectAsState()
-    val selectedSignal by viewModel.selectedSignal.collectAsState()
-    val waveformData by viewModel.waveformData.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val isReplaying by viewModel.isReplaying.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val signalCounts by viewModel.signalCounts.collectAsState()
-    val replaySuccess by viewModel.replaySuccess.collectAsState()
+    val state by viewModel.uiState.collectAsState()
+    val colors = Vesper.colors
+    val snackbarHostState = remember { SnackbarHostState() }
+    val listState = rememberLazyListState()
 
-    // Show success snackbar
-    LaunchedEffect(replaySuccess) {
-        replaySuccess?.let {
-            kotlinx.coroutines.delay(2000)
-            viewModel.clearReplaySuccess()
-        }
+    LaunchedEffect(state.notice) {
+        val notice = state.notice ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(notice)
+        viewModel.dismissNotice()
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        // Header
-        TopAppBar(
-            title = {
-                Column {
-                    Text("Signal Arsenal", fontWeight = FontWeight.Bold)
-                    Text(
-                        "${signals.size} captures",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+    VesperScaffold(
+        title = "Signal Arsenal",
+        subtitle = arsenalSubtitle(state),
+        navigationIcon = {
+            IconButton(onClick = onNavigateBack) {
+                Icon(
+                    imageVector = Icons.Rounded.ArrowBack,
+                    contentDescription = "Back",
+                    tint = colors.textSecondary
+                )
+            }
+        },
+        actions = {
+            IconButton(
+                onClick = viewModel::refresh,
+                modifier = Modifier.semantics {
+                    contentDescription =
+                        if (state.isRefreshing) "Refreshing captures" else "Refresh captures"
+                }
+            ) {
+                if (state.isRefreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = colors.gold
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = null,
+                        tint = colors.textSecondary
                     )
                 }
-            },
-            actions = {
-                IconButton(onClick = { viewModel.refresh() }) {
-                    Icon(Icons.Default.Refresh, "Refresh")
+            }
+        },
+        snackbarHost = {
+            SnackbarHost(hostState = snackbarHostState) { data ->
+                Snackbar(
+                    containerColor = colors.surface3,
+                    contentColor = colors.textPrimary,
+                    shape = MaterialTheme.shapes.medium
+                ) {
+                    Text(
+                        text = data.visuals.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.textPrimary
+                    )
                 }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            )
-        )
-
-        // Signal Type Tabs
-        SignalTypeTabs(
-            selectedType = selectedType,
-            signalCounts = signalCounts,
-            onTypeSelected = { viewModel.selectType(it) }
-        )
-
-        // Search Bar
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { viewModel.updateSearchQuery(it) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            placeholder = { Text("Search signals...") },
-            leadingIcon = { Icon(Icons.Default.Search, null) },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { viewModel.updateSearchQuery("") }) {
-                        Icon(Icons.Default.Clear, "Clear")
-                    }
-                }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = VesperOrange,
-                cursorColor = VesperOrange
-            )
-        )
-
-        // Main Content
-        Row(
+            }
+        }
+    ) { padding ->
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .weight(1f)
+                .padding(padding)
         ) {
-            // Signal List
-            LazyColumn(
+            VErrorBanner(
+                message = state.errorMessage.orEmpty(),
+                onRetry = when (state.errorSource) {
+                    ArsenalErrorSource.LOAD -> viewModel::refresh
+                    ArsenalErrorSource.REPLAY -> viewModel::replaySelected
+                    ArsenalErrorSource.DELETE -> viewModel::deleteSelected
+                },
+                onDismiss = viewModel::clearError,
+                visible = state.errorMessage != null
+            )
+
+            BoxWithConstraints(
                 modifier = Modifier
-                    .weight(if (selectedSignal != null) 0.4f else 1f)
-                    .fillMaxHeight(),
-                contentPadding = PaddingValues(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .fillMaxSize()
+                    .weight(1f)
             ) {
-                if (isLoading) {
-                    item {
+                val twoPane = maxWidth >= TwoPaneBreakpoint
+                BackHandler(enabled = !twoPane && state.selected != null) {
+                    viewModel.clearSelection()
+                }
+
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Search and filters belong to the list side of the flow.
+                    if (twoPane || state.selected == null) {
+                        ArsenalSearchField(
+                            query = state.query,
+                            onQueryChange = viewModel::updateQuery,
+                            modifier = Modifier.padding(
+                                horizontal = VesperSpace.gutter,
+                                vertical = VesperSpace.xs
+                            )
+                        )
+                        ArsenalTypeFilters(
+                            selected = state.selectedType,
+                            counts = state.counts,
+                            onSelect = viewModel::selectType
+                        )
+                    }
+
+                    if (twoPane) Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                        CaptureListPane(
+                            state = state,
+                            onSelect = viewModel::selectCapture,
+                            onRefresh = viewModel::refresh,
+                            onGoToDevice = onNavigateToDevice,
+                            listState = listState,
+                            modifier = Modifier
+                                .weight(0.42f)
+                                .fillMaxHeight()
+                        )
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(32.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(color = VesperOrange)
-                        }
-                    }
-                } else if (signals.isEmpty()) {
-                    item {
-                        EmptySignalsPlaceholder(selectedType)
-                    }
-                } else {
-                    items(signals, key = { it.path }) { signal ->
-                        SignalCard(
-                            signal = signal,
-                            isSelected = selectedSignal?.path == signal.path,
-                            onClick = { viewModel.selectSignal(signal) },
-                            onReplay = { viewModel.replaySignal(signal) },
-                            onDelete = { viewModel.deleteSignal(signal) },
-                            isReplaying = isReplaying && selectedSignal?.path == signal.path
+                                .width(1.dp)
+                                .fillMaxHeight()
+                                .background(colors.hairline)
                         )
-                    }
-                }
-            }
-
-            // Detail Panel (when signal selected)
-            AnimatedVisibility(
-                visible = selectedSignal != null,
-                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
-                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
-            ) {
-                selectedSignal?.let { signal ->
-                    SignalDetailPanel(
-                        signal = signal,
-                        waveformData = waveformData,
-                        isReplaying = isReplaying,
-                        onReplay = { viewModel.replaySignal(signal) },
-                        onClose = { viewModel.clearSelection() },
-                        modifier = Modifier
-                            .weight(0.6f)
-                            .fillMaxHeight()
-                    )
-                }
-            }
-        }
-
-        // Replay Success Banner
-        AnimatedVisibility(
-            visible = replaySuccess != null,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = VesperAccent.copy(alpha = 0.9f)
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.CheckCircle, null, tint = Color.White)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        replaySuccess ?: "",
-                        color = Color.White,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-        }
-
-        // Error Banner
-        error?.let { errorMsg ->
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.error
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(errorMsg, color = Color.White)
-                    IconButton(onClick = { viewModel.clearError() }) {
-                        Icon(Icons.Default.Close, null, tint = Color.White)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SignalTypeTabs(
-    selectedType: SignalType,
-    signalCounts: Map<SignalType, Int>,
-    onTypeSelected: (SignalType) -> Unit
-) {
-    ScrollableTabRow(
-        selectedTabIndex = SignalType.entries.indexOf(selectedType),
-        containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = VesperOrange,
-        edgePadding = 16.dp
-    ) {
-        SignalType.entries.forEach { type ->
-            val count = signalCounts[type] ?: 0
-            Tab(
-                selected = selectedType == type,
-                onClick = { onTypeSelected(type) },
-                text = {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(SignalArsenalViewModel.getSignalIcon(type))
-                        Text(type.displayName)
-                        if (count > 0) {
-                            Badge(containerColor = VesperOrange) {
-                                Text("$count", color = Color.White)
-                            }
+                        if (state.selected != null) {
+                            CaptureDetailPane(
+                                state = state,
+                                closeDescription = "Close detail",
+                                onClose = viewModel::clearSelection,
+                                onReplay = viewModel::replaySelected,
+                                onDelete = viewModel::deleteSelected,
+                                onGoToDevice = onNavigateToDevice,
+                                modifier = Modifier
+                                    .weight(0.58f)
+                                    .fillMaxHeight()
+                            )
+                        } else {
+                            EmptyDetailPane(
+                                modifier = Modifier
+                                    .weight(0.58f)
+                                    .fillMaxHeight()
+                            )
                         }
-                    }
-                }
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun SignalCard(
-    signal: SignalCapture,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    onReplay: () -> Unit,
-    onDelete: () -> Unit,
-    isReplaying: Boolean
-) {
-    var showMenu by remember { mutableStateOf(false) }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = { showMenu = true }
-            ),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) {
-                VesperOrange.copy(alpha = 0.15f)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            }
-        ),
-        border = if (isSelected) {
-            BorderStroke(2.dp, VesperOrange)
-        } else null
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    signal.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    SignalArsenalViewModel.getSignalSubtitle(signal),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                // Replay Button
-                FilledIconButton(
-                    onClick = onReplay,
-                    enabled = !isReplaying,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = VesperOrange
-                    ),
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    if (isReplaying) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = Color.White,
-                            strokeWidth = 2.dp
+                    } else if (state.selected != null) {
+                        CaptureDetailPane(
+                            state = state,
+                            closeDescription = "Back to captures",
+                            onClose = viewModel::clearSelection,
+                            onReplay = viewModel::replaySelected,
+                            onDelete = viewModel::deleteSelected,
+                            onGoToDevice = onNavigateToDevice,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
                         )
                     } else {
-                        Icon(
-                            Icons.Default.PlayArrow,
-                            contentDescription = "Replay",
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-
-                // More Options
-                Box {
-                    IconButton(
-                        onClick = { showMenu = true },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(Icons.Default.MoreVert, "More options")
-                    }
-                    DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Delete") },
-                            leadingIcon = { Icon(Icons.Default.Delete, null) },
-                            onClick = {
-                                showMenu = false
-                                onDelete()
-                            }
+                        CaptureListPane(
+                            state = state,
+                            onSelect = viewModel::selectCapture,
+                            onRefresh = viewModel::refresh,
+                            onGoToDevice = onNavigateToDevice,
+                            listState = listState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
                         )
                     }
                 }
@@ -361,298 +233,9 @@ private fun SignalCard(
     }
 }
 
-@Composable
-private fun SignalDetailPanel(
-    signal: SignalCapture,
-    waveformData: WaveformData?,
-    isReplaying: Boolean,
-    onReplay: () -> Unit,
-    onClose: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier.padding(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp)
-        ) {
-            // Header
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    signal.name,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
-                )
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, "Close")
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Signal Type Badge
-            Surface(
-                color = VesperOrange.copy(alpha = 0.2f),
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text(
-                    "${SignalArsenalViewModel.getSignalIcon(signal.type)} ${signal.type.displayName}",
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    color = VesperOrange,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Waveform Visualization
-            waveformData?.let { data ->
-                Text(
-                    "WAVEFORM",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                WaveformView(
-                    waveformData = data,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(120.dp)
-                )
-                Text(
-                    "Duration: ${String.format(java.util.Locale.US, "%.2f", data.duration)}ms",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-
-            // Signal Details
-            Text(
-                "DETAILS",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            SignalDetails(signal)
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Replay Button
-            Button(
-                onClick = onReplay,
-                enabled = !isReplaying,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = VesperOrange
-                )
-            ) {
-                if (isReplaying) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Transmitting...")
-                } else {
-                    Icon(Icons.Default.PlayArrow, null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("REPLAY SIGNAL")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SignalDetails(signal: SignalCapture) {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            when (signal) {
-                is SignalCapture.SubGhz -> {
-                    DetailRow("Protocol", signal.protocol)
-                    DetailRow("Frequency", SignalArsenalViewModel.formatFrequency(signal.frequency))
-                    signal.bitLength?.let { DetailRow("Bit Length", it.toString()) }
-                    signal.keyData?.let { DetailRow("Key", it, mono = true) }
-                    DetailRow("Preset", signal.preset)
-                }
-                is SignalCapture.Infrared -> {
-                    DetailRow("Protocol", signal.protocol)
-                    DetailRow("Address", signal.address, mono = true)
-                    DetailRow("Command", signal.command, mono = true)
-                }
-                is SignalCapture.Nfc -> {
-                    DetailRow("Type", signal.deviceType)
-                    DetailRow("UID", signal.uid, mono = true)
-                    signal.atqa?.let { DetailRow("ATQA", it, mono = true) }
-                    signal.sak?.let { DetailRow("SAK", it, mono = true) }
-                    signal.dataBlocks?.take(4)?.forEach { block ->
-                        DetailRow("Block ${block.blockNumber}", block.data, mono = true)
-                    }
-                    if ((signal.dataBlocks?.size ?: 0) > 4) {
-                        Text(
-                            "... and ${signal.dataBlocks!!.size - 4} more blocks",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                is SignalCapture.Rfid -> {
-                    DetailRow("Protocol", signal.protocol)
-                    DetailRow("Data", signal.keyData, mono = true)
-                }
-                is SignalCapture.IButton -> {
-                    DetailRow("Protocol", signal.protocol)
-                    DetailRow("Key", signal.keyData, mono = true)
-                }
-            }
-
-            DetailRow("Path", signal.path.substringAfterLast("/"), mono = true)
-        }
-    }
-}
-
-@Composable
-private fun DetailRow(
-    label: String,
-    value: String,
-    mono: Boolean = false
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            value,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium,
-            fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 200.dp)
-        )
-    }
-}
-
-@Composable
-private fun WaveformView(
-    waveformData: WaveformData,
-    modifier: Modifier = Modifier
-) {
-    val waveColor = VesperOrange
-    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
-
-    Canvas(
-        modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-    ) {
-        val width = size.width
-        val height = size.height
-        val padding = 16f
-
-        // Draw grid
-        val gridLines = 5
-        for (i in 0..gridLines) {
-            val y = padding + (height - 2 * padding) * i / gridLines
-            drawLine(
-                color = gridColor,
-                start = Offset(padding, y),
-                end = Offset(width - padding, y),
-                strokeWidth = 1f
-            )
-        }
-
-        if (waveformData.samples.isEmpty()) return@Canvas
-
-        // Draw waveform
-        val path = Path()
-        val xScale = (width - 2 * padding) / waveformData.duration
-        val yScale = height - 2 * padding
-
-        waveformData.samples.forEachIndexed { index, sample ->
-            val x = padding + sample.time * xScale
-            val y = padding + (1f - sample.value) * yScale
-
-            if (index == 0) {
-                path.moveTo(x, y)
-            } else {
-                path.lineTo(x, y)
-            }
-        }
-
-        drawPath(
-            path = path,
-            color = waveColor,
-            style = Stroke(width = 2f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-
-        // Draw filled area
-        val filledPath = Path().apply {
-            addPath(path)
-            lineTo(padding + waveformData.duration * xScale, height - padding)
-            lineTo(padding, height - padding)
-            close()
-        }
-        drawPath(
-            path = filledPath,
-            brush = Brush.verticalGradient(
-                colors = listOf(
-                    waveColor.copy(alpha = 0.3f),
-                    waveColor.copy(alpha = 0.05f)
-                )
-            )
-        )
-    }
-}
-
-@Composable
-private fun EmptySignalsPlaceholder(type: SignalType) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            SignalArsenalViewModel.getSignalIcon(type),
-            style = MaterialTheme.typography.displayLarge
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            "No ${type.displayName} captures",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            "Captures will appear here when you record signals with your Flipper",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-            modifier = Modifier.padding(top = 8.dp)
-        )
-    }
+private fun arsenalSubtitle(state: SignalArsenalUiState): String {
+    if (state.isLoading) return "Loading captures"
+    val count = state.allCaptures.size
+    val noun = if (count == 1) "capture" else "captures"
+    return "$count ${state.selectedType.displayName} $noun"
 }

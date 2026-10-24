@@ -6,37 +6,77 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.vesper.flipper.ble.FlipperFileSystem
+import com.vesper.flipper.domain.model.SignalType
+import com.vesper.flipper.ui.components.VCard
+import com.vesper.flipper.ui.components.VEmptyState
+import com.vesper.flipper.ui.components.VErrorBanner
+import com.vesper.flipper.ui.components.VInlineLoading
+import com.vesper.flipper.ui.components.VListRow
+import com.vesper.flipper.ui.components.VPrimaryButton
+import com.vesper.flipper.ui.components.VSecondaryButton
+import com.vesper.flipper.ui.components.VSectionHeader
+import com.vesper.flipper.ui.components.VesperScaffold
+import com.vesper.flipper.ui.theme.Vesper
 import com.vesper.flipper.ui.theme.VesperTheme
+import com.vesper.flipper.ui.theme.vesperBackdrop
 import dagger.hilt.android.AndroidEntryPoint
+import java.util.Locale
+import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
+/**
+ * Configuration screen for [SignalWidget].
+ *
+ * The result starts as RESULT_CANCELED. It becomes RESULT_OK only when the
+ * user saves at least one slot, so backing out never leaves a half-configured
+ * widget behind.
+ */
 @AndroidEntryPoint
 class SignalWidgetConfigActivity : ComponentActivity() {
+
+    @Inject
+    lateinit var fileSystem: FlipperFileSystem
 
     private var appWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Set the result to CANCELED in case the user backs out
         setResult(RESULT_CANCELED)
 
-        // Get the widget ID from the intent
-        appWidgetId = intent?.extras?.getInt(
+        appWidgetId = intent?.getIntExtra(
             AppWidgetManager.EXTRA_APPWIDGET_ID,
             AppWidgetManager.INVALID_APPWIDGET_ID
         ) ?: AppWidgetManager.INVALID_APPWIDGET_ID
@@ -48,215 +88,258 @@ class SignalWidgetConfigActivity : ComponentActivity() {
 
         setContent {
             VesperTheme(darkTheme = true) {
-                WidgetConfigScreen(
-                    onSave = { signals ->
-                        saveWidgetConfiguration(signals)
-                        finishWithResult()
-                    },
-                    onCancel = { finish() }
-                )
-            }
-        }
-    }
+                var slots by remember {
+                    mutableStateOf(SignalWidget.loadWidgetSignals(this@SignalWidgetConfigActivity, appWidgetId))
+                }
+                var selectedSlot by remember { mutableStateOf<Int?>(null) }
+                var catalog by remember { mutableStateOf<SignalCatalog>(SignalCatalog.Loading) }
+                var reloadKey by remember { mutableStateOf(0) }
 
-    private fun saveWidgetConfiguration(signals: List<WidgetSignal?>) {
-        val prefs = getSharedPreferences("widget_$appWidgetId", MODE_PRIVATE)
-        prefs.edit().apply {
-            signals.forEachIndexed { index, signal ->
-                if (signal != null) {
-                    putString("signal_${index}_id", signal.id)
-                    putString("signal_${index}_name", signal.name)
-                    putString("signal_${index}_type", signal.type)
-                } else {
-                    remove("signal_${index}_id")
-                    remove("signal_${index}_name")
-                    remove("signal_${index}_type")
+                LaunchedEffect(reloadKey) {
+                    catalog = SignalCatalog.Loading
+                    catalog = try {
+                        SignalCatalog.Ready(loadSignalCatalog())
+                    } catch (e: Exception) {
+                        SignalCatalog.Failed(e.message ?: "Could not load signals")
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(vesperBackdrop())
+                ) {
+                    WidgetConfigScreen(
+                        slots = slots,
+                        selectedSlot = selectedSlot,
+                        catalog = catalog,
+                        onSelectSlot = { index ->
+                            selectedSlot = if (selectedSlot == index) null else index
+                        },
+                        onAssign = { index, signal ->
+                            slots = slots.toMutableList().also { it[index] = signal }
+                            selectedSlot = null
+                        },
+                        onClearSlot = { index ->
+                            slots = slots.toMutableList().also { it[index] = null }
+                        },
+                        onRetry = { reloadKey += 1 },
+                        onSave = { saveAndFinish(slots) },
+                        onCancel = { cancelAndFinish() }
+                    )
                 }
             }
-            apply()
         }
     }
 
-    private fun finishWithResult() {
-        // Update the widget
+    private suspend fun loadSignalCatalog(): List<SignalGroup> {
+        return withContext(Dispatchers.IO) {
+            val groups = mutableListOf<SignalGroup>()
+            var loadedTypes = 0
+            var failedTypes = 0
+
+            SignalType.entries.forEach { type ->
+                val result = fileSystem.listDirectory(type.directory)
+                if (result.isFailure) {
+                    failedTypes += 1
+                    return@forEach
+                }
+
+                loadedTypes += 1
+                val signals = result.getOrThrow()
+                    .asSequence()
+                    .filter { !it.isDirectory && it.name.endsWith(type.extension, ignoreCase = true) }
+                    .map { entry ->
+                        WidgetSignal(
+                            id = entry.path,
+                            name = entry.name.removeSuffix(type.extension).ifBlank { entry.name },
+                            type = type.name.lowercase(Locale.US)
+                        )
+                    }
+                    .sortedBy { it.name.lowercase(Locale.US) }
+                    .toList()
+
+                if (signals.isNotEmpty()) {
+                    groups.add(
+                        SignalGroup(
+                            name = type.displayName,
+                            type = type.name.lowercase(Locale.US),
+                            signals = signals
+                        )
+                    )
+                }
+            }
+
+            if (loadedTypes == 0 && failedTypes > 0) {
+                throw IllegalStateException("Connect to your Flipper, then try again")
+            }
+            groups
+        }
+    }
+
+    private fun saveAndFinish(slots: List<WidgetSignal?>) {
+        if (slots.none { it != null }) return
+
+        SignalWidget.saveWidgetSignals(this, appWidgetId, slots)
         val appWidgetManager = AppWidgetManager.getInstance(this)
         SignalWidget.updateAppWidget(this, appWidgetManager, appWidgetId)
 
-        // Return success
         val resultValue = Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
         setResult(RESULT_OK, resultValue)
         finish()
     }
+
+    private fun cancelAndFinish() {
+        setResult(RESULT_CANCELED)
+        finish()
+    }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WidgetConfigScreen(
-    onSave: (List<WidgetSignal?>) -> Unit,
+private fun WidgetConfigScreen(
+    slots: List<WidgetSignal?>,
+    selectedSlot: Int?,
+    catalog: SignalCatalog,
+    onSelectSlot: (Int) -> Unit,
+    onAssign: (Int, WidgetSignal) -> Unit,
+    onClearSlot: (Int) -> Unit,
+    onRetry: () -> Unit,
+    onSave: () -> Unit,
     onCancel: () -> Unit
 ) {
-    var selectedSignals by remember { mutableStateOf(listOf<WidgetSignal?>(null, null, null, null)) }
-    var selectedSlot by remember { mutableStateOf<Int?>(null) }
+    val colors = Vesper.colors
+    val space = Vesper.space
 
-    // Mock signal data - in real implementation, this would come from the Flipper
-    val availableSignals = remember {
-        listOf(
-            SignalGroup("Sub-GHz", "subghz", listOf(
-                WidgetSignal("garage_door", "🚗 Garage Door", "subghz"),
-                WidgetSignal("gate_open", "🚪 Gate Open", "subghz"),
-                WidgetSignal("car_unlock", "🔓 Car Unlock", "subghz"),
-                WidgetSignal("fan_toggle", "🌀 Fan Toggle", "subghz")
-            )),
-            SignalGroup("Infrared", "ir", listOf(
-                WidgetSignal("tv_power", "📺 TV Power", "ir"),
-                WidgetSignal("ac_toggle", "❄️ AC Toggle", "ir"),
-                WidgetSignal("projector", "🎥 Projector", "ir"),
-                WidgetSignal("soundbar", "🔊 Soundbar", "ir")
-            )),
-            SignalGroup("NFC", "nfc", listOf(
-                WidgetSignal("work_badge", "🏢 Work Badge", "nfc"),
-                WidgetSignal("gym_card", "💪 Gym Card", "nfc"),
-                WidgetSignal("parking", "🅿️ Parking", "nfc")
-            )),
-            SignalGroup("RFID", "rfid", listOf(
-                WidgetSignal("home_key", "🏠 Home Key", "rfid"),
-                WidgetSignal("storage", "📦 Storage", "rfid")
-            ))
-        )
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0D0D0D),
-                        Color(0xFF1A1A2E)
-                    )
+    VesperScaffold(
+        title = "Configure widget",
+        subtitle = "Choose up to four signals",
+        navigationIcon = {
+            IconButton(onClick = onCancel) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Cancel",
+                    tint = colors.textSecondary
                 )
-            )
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            // Header
-            TopAppBar(
-                title = {
-                    Text(
-                        "Configure Widget",
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onCancel) {
-                        Icon(Icons.Default.Close, contentDescription = "Cancel")
-                    }
-                },
-                actions = {
-                    TextButton(
-                        onClick = { onSave(selectedSignals) },
-                        enabled = selectedSignals.any { it != null }
-                    ) {
-                        Text("Save", color = Color(0xFFFF6B00))
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent
-                )
-            )
-
-            // Signal Slots
-            Text(
-                text = "Tap a slot to assign a signal",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color.Gray,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-
+            }
+        },
+        bottomBar = {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .navigationBarsPadding()
+                    .padding(horizontal = space.gutter, vertical = space.md),
+                horizontalArrangement = Arrangement.spacedBy(space.sm)
             ) {
-                repeat(4) { index ->
-                    SignalSlot(
-                        signal = selectedSignals[index],
-                        isSelected = selectedSlot == index,
-                        slotNumber = index + 1,
-                        onClick = { selectedSlot = index },
-                        onClear = {
-                            selectedSignals = selectedSignals.toMutableList().apply {
-                                set(index, null)
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+                VSecondaryButton(
+                    text = "Cancel",
+                    onClick = onCancel,
+                    modifier = Modifier.weight(1f)
+                )
+                VPrimaryButton(
+                    text = "Save",
+                    onClick = onSave,
+                    modifier = Modifier.weight(1f),
+                    enabled = slots.any { it != null }
+                )
+            }
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            contentPadding = PaddingValues(
+                start = space.gutter,
+                top = space.md,
+                end = space.gutter,
+                bottom = space.lg
+            ),
+            verticalArrangement = Arrangement.spacedBy(space.sm)
+        ) {
+            item(key = "preview") {
+                WidgetPreview(
+                    slots = slots,
+                    selectedSlot = selectedSlot,
+                    onSelectSlot = onSelectSlot,
+                    onClearSlot = onClearSlot
+                )
             }
 
-            Divider(color = Color(0xFF333333), modifier = Modifier.padding(vertical = 8.dp))
-
-            // Signal List
-            if (selectedSlot != null) {
+            item(key = "hint") {
                 Text(
-                    text = "Select a signal for Slot ${selectedSlot!! + 1}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    text = if (selectedSlot == null) {
+                        "Tap a slot in the preview, then choose a signal."
+                    } else {
+                        "Choosing a signal for slot " + (selectedSlot + 1) + "."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.textSecondary
                 )
+            }
 
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    availableSignals.forEach { group ->
-                        item {
-                            Text(
-                                text = group.name,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = Color(0xFFFF6B00),
-                                modifier = Modifier.padding(vertical = 8.dp)
-                            )
-                        }
-                        items(group.signals) { signal ->
-                            SignalItem(
-                                signal = signal,
-                                isSelected = selectedSignals.contains(signal),
-                                onClick = {
-                                    selectedSlot?.let { slot ->
-                                        selectedSignals = selectedSignals.toMutableList().apply {
-                                            set(slot, signal)
-                                        }
-                                        selectedSlot = null
-                                    }
-                                }
-                            )
-                        }
+            when (catalog) {
+                is SignalCatalog.Loading -> {
+                    item(key = "loading") {
+                        VInlineLoading("Loading signals")
                     }
                 }
-            } else {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Icon(
-                            Icons.Default.TouchApp,
-                            contentDescription = null,
-                            modifier = Modifier.size(64.dp),
-                            tint = Color(0xFF444444)
+
+                is SignalCatalog.Failed -> {
+                    item(key = "error") {
+                        VErrorBanner(
+                            message = catalog.message,
+                            onRetry = onRetry
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "Tap a slot above to configure",
-                            color = Color.Gray
-                        )
+                    }
+                }
+
+                is SignalCatalog.Ready -> {
+                    if (catalog.groups.isEmpty()) {
+                        item(key = "empty") {
+                            VEmptyState(
+                                title = "No signals found",
+                                message = "Connect to your Flipper and capture a signal, then try again.",
+                                actionLabel = "Retry",
+                                onAction = onRetry
+                            )
+                        }
+                    } else {
+                        catalog.groups.forEach { group ->
+                            item(key = "group-" + group.type) {
+                                VSectionHeader(
+                                    title = group.name,
+                                    eyebrow = group.signals.size.toString() + " signals"
+                                )
+                            }
+                            items(
+                                items = group.signals,
+                                key = { signal -> signal.id }
+                            ) { signal ->
+                                val slot = selectedSlot
+                                val isAssigned = slot?.let { slots.getOrNull(it)?.id } == signal.id
+                                VListRow(
+                                    title = signal.name,
+                                    subtitle = if (slot == null) "Tap a slot first" else group.name,
+                                    trailing = if (isAssigned) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Check,
+                                                contentDescription = "Assigned",
+                                                tint = colors.success
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    enabled = slot != null,
+                                    onClick = if (slot == null) null else {
+                                        {
+                                            onAssign(slot, signal)
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -265,73 +348,117 @@ fun WidgetConfigScreen(
 }
 
 @Composable
-fun SignalSlot(
+private fun WidgetPreview(
+    slots: List<WidgetSignal?>,
+    selectedSlot: Int?,
+    onSelectSlot: (Int) -> Unit,
+    onClearSlot: (Int) -> Unit
+) {
+    val colors = Vesper.colors
+    val space = Vesper.space
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        VSectionHeader(title = "Preview", eyebrow = "Home screen")
+
+        VCard(
+            level = 2,
+            contentPadding = PaddingValues(space.sm)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Vesper signals",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = colors.textPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "Arsenal",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.textTertiary
+                )
+            }
+
+            Spacer(modifier = Modifier.height(space.xs))
+
+            for (row in 0 until 2) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(space.xs)
+                ) {
+                    for (column in 0 until 2) {
+                        val index = row * 2 + column
+                        WidgetSlot(
+                            signal = slots.getOrNull(index),
+                            slotNumber = index + 1,
+                            selected = selectedSlot == index,
+                            onClick = { onSelectSlot(index) },
+                            onClear = { onClearSlot(index) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                if (row == 0) {
+                    Spacer(modifier = Modifier.height(space.xs))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WidgetSlot(
     signal: WidgetSignal?,
-    isSelected: Boolean,
     slotNumber: Int,
+    selected: Boolean,
     onClick: () -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = modifier
-            .aspectRatio(1f)
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) Color(0xFF2A2A4E) else Color(0xFF1E1E2E)
-        ),
-        border = if (isSelected) {
-            androidx.compose.foundation.BorderStroke(2.dp, Color(0xFFFF6B00))
-        } else null,
-        shape = RoundedCornerShape(12.dp)
+    val colors = Vesper.colors
+    val space = Vesper.space
+
+    VCard(
+        level = if (selected) 3 else 1,
+        onClick = onClick,
+        modifier = modifier.heightIn(min = 72.dp),
+        contentPadding = PaddingValues(horizontal = space.sm, vertical = space.xs)
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
+        Text(
+            text = signal?.name ?: ("Slot " + slotNumber),
+            style = MaterialTheme.typography.titleSmall,
+            color = if (signal == null) colors.textTertiary else colors.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = if (signal == null) "Empty" else "Assigned",
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.textTertiary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            Text(
+                text = if (selected) "Editing" else "Tap to edit",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (selected) colors.gold else colors.textTertiary,
+                modifier = Modifier.weight(1f)
+            )
             if (signal != null) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(8.dp)
-                ) {
-                    Text(
-                        text = signal.name.substringBefore(" "),
-                        style = MaterialTheme.typography.headlineSmall
-                    )
-                    Text(
-                        text = signal.name.substringAfter(" "),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White,
-                        maxLines = 1
-                    )
-                }
                 IconButton(
                     onClick = onClear,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .size(24.dp)
+                    modifier = Modifier.heightIn(min = 48.dp)
                 ) {
                     Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Clear",
-                        modifier = Modifier.size(14.dp),
-                        tint = Color.Gray
-                    )
-                }
-            } else {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = "Add",
-                        tint = Color(0xFF555555),
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Text(
-                        text = "Slot $slotNumber",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF555555)
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Clear slot " + slotNumber,
+                        tint = colors.textTertiary
                     )
                 }
             }
@@ -339,43 +466,10 @@ fun SignalSlot(
     }
 }
 
-@Composable
-fun SignalItem(
-    signal: WidgetSignal,
-    isSelected: Boolean,
-    onClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) Color(0xFF2A3A2E) else Color(0xFF1E1E2E)
-        ),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = signal.name,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color.White,
-                modifier = Modifier.weight(1f)
-            )
-            if (isSelected) {
-                Icon(
-                    Icons.Default.Check,
-                    contentDescription = "Selected",
-                    tint = Color(0xFF00C853),
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
-    }
+private sealed interface SignalCatalog {
+    data object Loading : SignalCatalog
+    data class Ready(val groups: List<SignalGroup>) : SignalCatalog
+    data class Failed(val message: String) : SignalCatalog
 }
 
 data class SignalGroup(

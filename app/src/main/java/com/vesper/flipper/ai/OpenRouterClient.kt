@@ -5,13 +5,20 @@ import com.vesper.flipper.data.SettingsStore
 import com.vesper.flipper.domain.model.*
 import com.vesper.flipper.security.InputValidator
 import com.vesper.flipper.security.RateLimiter
+import com.vesper.flipper.security.SecretRedaction
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -20,7 +27,6 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
-import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -44,24 +50,22 @@ class OpenRouterClient @Inject constructor(
         coerceInputValues = true
     }
 
+    // Timeouts:
+    //  - connect: BLE-tethered phones can be slow to resolve, but 15s is plenty.
+    //  - read:    streaming-style providers can think for a while; 120s per read.
+    //  - call:    hard ceiling for the whole exchange (connect+write+read+retries
+    //             inside a single call), so a half-open socket can never hang the UI.
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(75, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .callTimeout(CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
     // Rate limiter: 30 requests per minute
     private val rateLimiter = RateLimiter(maxRequests = 30, windowMs = 60_000)
     private val toolUnsupportedModels = ConcurrentHashMap<String, Long>()
-
-    // Retry configuration
-    private object RetryConfig {
-        const val MAX_RETRIES = 2
-        const val INITIAL_DELAY_MS = 700L
-        const val MAX_DELAY_MS = 10000L
-        const val BACKOFF_MULTIPLIER = 2.0
-    }
 
     // Use centralized prompt system for consistency and maintainability
     private val baseSystemPrompt = VesperPrompts.SYSTEM_PROMPT
@@ -463,69 +467,151 @@ class OpenRouterClient @Inject constructor(
     }
 
     /**
-     * Execute HTTP request with exponential backoff retry for transient failures.
+     * Execute an HTTP request with a bounded, jittered retry policy.
+     *
+     * Retry rules (see [RetryPolicy]):
+     *  - 408 / 429 / 5xx and transport IOException are retryable.
+     *  - Any other 4xx is terminal: retrying a malformed request, a rejected key
+     *    or an unknown model only wastes the user's quota.
+     *  - Every sleep is capped, so a malicious/hostile `Retry-After` cannot
+     *    stall the coroutine for minutes.
+     *  - Cancellation is cooperative AND physical: cancelling the coroutine
+     *    cancels the in-flight OkHttp call and closes the socket.
      */
     private suspend fun executeWithRetry(request: Request): ChatCompletionResult {
-        var lastException: Exception? = null
-        var delayMs = RetryConfig.INITIAL_DELAY_MS
+        var lastError: String? = null
 
-        repeat(RetryConfig.MAX_RETRIES) { attempt ->
+        for (attempt in 0 until RetryPolicy.MAX_ATTEMPTS) {
+            coroutineContext.ensureActive()
+
+            val call = client.newCall(request)
+            var retryAfterHeader: String? = null
+            var retryable = false
+
             try {
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string()
-
-                    // Check for rate limit from server
-                    if (response.code == 429) {
-                        val retryAfter = response.header("Retry-After")?.toLongOrNull() ?: 60
-                        delay(retryAfter * 1000)
-                        return@repeat // Retry
+                val outcome = executeCallCancellable(call)
+                when (outcome) {
+                    is CallOutcome.Parsed -> return outcome.result
+                    is CallOutcome.Retryable -> {
+                        retryable = true
+                        retryAfterHeader = outcome.retryAfterHeader
+                        lastError = outcome.message
                     }
-
-                    // Check for server errors (5xx) - these are retryable
-                    if (response.code in 500..599) {
-                        lastException = IOException("Server error: ${response.code}")
-                        delay(delayMs)
-                        delayMs = (delayMs * RetryConfig.BACKOFF_MULTIPLIER).toLong()
-                            .coerceAtMost(RetryConfig.MAX_DELAY_MS)
-                        return@repeat // Retry
-                    }
-
-                    // Client errors (4xx except 429) are not retryable
-                    if (!response.isSuccessful) {
-                        return ChatCompletionResult.Error(
-                            "API error: ${response.code} - ${responseBody ?: "Unknown error"}"
-                        )
-                    }
-
-                    if (responseBody == null) {
-                        return ChatCompletionResult.Error("Empty response from API")
-                    }
-
-                    return parseResponse(responseBody)
+                    is CallOutcome.Fatal -> return ChatCompletionResult.Error(outcome.message)
                 }
-
-            } catch (e: SocketTimeoutException) {
-                lastException = e
-                delay(delayMs)
-                delayMs = (delayMs * RetryConfig.BACKOFF_MULTIPLIER).toLong()
-                    .coerceAtMost(RetryConfig.MAX_DELAY_MS)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: IOException) {
+                // A cancelled OkHttp call surfaces as IOException("Canceled");
+                // re-check the coroutine state before treating it as a failure.
+                coroutineContext.ensureActive()
                 if (isDnsResolutionFailure(e)) {
                     return ChatCompletionResult.Error(DNS_RESOLUTION_ERROR_MESSAGE)
                 }
-                lastException = e
-                delay(delayMs)
-                delayMs = (delayMs * RetryConfig.BACKOFF_MULTIPLIER).toLong()
-                    .coerceAtMost(RetryConfig.MAX_DELAY_MS)
+                retryable = true
+                lastError = "Network error: ${sanitizeErrorMessage(e.message)}"
             } catch (e: Exception) {
-                // Non-retryable exception
-                return ChatCompletionResult.Error("Request failed: ${e.message}")
+                coroutineContext.ensureActive()
+                return ChatCompletionResult.Error("Request failed: ${sanitizeErrorMessage(e.message)}")
             }
+
+            val isLastAttempt = attempt == RetryPolicy.MAX_ATTEMPTS - 1
+            if (!retryable || isLastAttempt) {
+                return ChatCompletionResult.Error(
+                    lastError ?: "Request failed after ${attempt + 1} attempt(s)"
+                )
+            }
+
+            val waitMs = RetryPolicy.delayForRetry(attempt, retryAfterHeader)
+            Log.d(TAG, "Retrying OpenRouter request in ${waitMs}ms (attempt ${attempt + 2}/${RetryPolicy.MAX_ATTEMPTS})")
+            delay(waitMs)
         }
 
         return ChatCompletionResult.Error(
-            "Request failed after ${RetryConfig.MAX_RETRIES} attempts: ${lastException?.message}"
+            lastError ?: "Request failed after ${RetryPolicy.MAX_ATTEMPTS} attempts"
         )
+    }
+
+    /**
+     * Bridge the blocking OkHttp call into a cancellable coroutine.
+     *
+     * Cancelling the coroutine cancels the underlying [Call] (socket close)
+     * instead of leaving a half-open connection to time out on its own.
+     */
+    private suspend fun executeCallCancellable(call: Call): CallOutcome =
+        suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            try {
+                continuation.resume(executeCall(call))
+            } catch (e: CancellationException) {
+                continuation.cancel(e)
+            } catch (e: Throwable) {
+                continuation.resumeWithException(e)
+            }
+        }
+
+    /**
+     * Perform one blocking call. The response body is always consumed inside
+     * `use {}' so the connection is released even on error paths.
+     */
+    private fun executeCall(call: Call): CallOutcome {
+        call.execute().use { response ->
+            val code = response.code
+            val body = response.body?.string()
+
+            if (response.isSuccessful) {
+                if (body.isNullOrBlank()) {
+                    return CallOutcome.Retryable("Empty response from API", retryAfterHeader = null)
+                }
+                return CallOutcome.Parsed(parseResponse(body))
+            }
+
+            if (RetryPolicy.isRetryableStatus(code)) {
+                return CallOutcome.Retryable(
+                    message = describeHttpFailure(code, body),
+                    retryAfterHeader = response.header("Retry-After")
+                )
+            }
+
+            return CallOutcome.Fatal(describeHttpFailure(code, body, clientErrorHint(code)))
+        }
+    }
+
+    private sealed class CallOutcome {
+        data class Parsed(val result: ChatCompletionResult) : CallOutcome()
+        data class Retryable(val message: String, val retryAfterHeader: String?) : CallOutcome()
+        data class Fatal(val message: String) : CallOutcome()
+    }
+
+    /**
+     * Build a short, actionable, secret-free description of an HTTP failure.
+     * Provider error bodies frequently echo request metadata, so they are
+     * redacted before they reach the UI, logs or the chat transcript.
+     */
+    private fun describeHttpFailure(code: Int, body: String?, hint: String? = null): String {
+        val detail = body
+            ?.let { SecretRedaction.redact(it) }
+            ?.replace('\n', ' ')
+            ?.replace('\r', ' ')
+            ?.trim()
+            ?.take(MAX_ERROR_BODY_CHARS)
+            ?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+
+        return buildString {
+            append("API error ").append(code)
+            if (code == 429) append(" (rate limited)")
+            detail?.let { append(" - ").append(it) }
+            hint?.let { append(". ").append(it) }
+        }
+    }
+
+    private fun clientErrorHint(code: Int): String? = when (code) {
+        401, 403 -> "OpenRouter rejected the API key. Re-check it in Settings."
+        402 -> "OpenRouter reports insufficient credits for this account."
+        404 -> "Model or endpoint not found. Choose another model in Settings."
+        413 -> "Request too large. Start a new chat session."
+        422 -> "OpenRouter rejected the request payload."
+        else -> null
     }
 
     /**
@@ -543,7 +629,9 @@ class OpenRouterClient @Inject constructor(
             // Error responses look like: {"error": {"message": "...", "code": 400}}
             val errorObj = root["error"]?.jsonObject
             if (errorObj != null) {
-                val errorMsg = errorObj["message"]?.jsonPrimitive?.contentOrNull ?: "Unknown API error"
+                val errorMsg = SecretRedaction.redact(
+                    errorObj["message"]?.jsonPrimitive?.contentOrNull ?: "Unknown API error"
+                ).orEmpty()
                 val errorCode = errorObj["code"]?.jsonPrimitive?.intOrNull
                 Log.e(TAG, "OpenRouter API error (code=$errorCode): $errorMsg")
                 return ChatCompletionResult.Error("API error${errorCode?.let { " $it" } ?: ""}: $errorMsg")
@@ -571,7 +659,11 @@ class OpenRouterClient @Inject constructor(
             val toolCalls = rawToolCalls?.mapNotNull { tc ->
                 // Validate tool call structure — reject blanks but log them
                 if (tc.id.isBlank() || tc.function.name.isBlank()) {
-                    Log.w(TAG, "Dropping malformed tool call: id='${tc.id}' name='${tc.function.name}' args='${tc.function.arguments.take(100)}'")
+                    Log.w(
+                        TAG,
+                        "Dropping malformed tool call: id='${tc.id}' name='${tc.function.name}' " +
+                            "args=${SecretRedaction.redact(tc.function.arguments.take(100))}"
+                    )
                     null
                 } else {
                     ToolCall(
@@ -595,7 +687,7 @@ class OpenRouterClient @Inject constructor(
                 tokensUsed = apiResponse.usage?.totalTokens
             )
         } catch (e: Exception) {
-            ChatCompletionResult.Error("Failed to parse response: ${e.message}")
+            ChatCompletionResult.Error("Failed to parse response: ${sanitizeErrorMessage(e.message)}")
         }
     }
 
@@ -690,7 +782,12 @@ class OpenRouterClient @Inject constructor(
                         requestMessages.add(
                             OpenRouterMessage(
                                 role = "tool",
-                                content = JsonPrimitive(result.content),
+                                // Everything a Flipper returns is attacker-influenced
+                                // data. Delimit it so the system prompt can state
+                                // unambiguously that it is never an instruction.
+                                content = JsonPrimitive(
+                                    UntrustedData.wrapToolResult(result.content, TOOL_NAME)
+                                ),
                                 toolCallId = result.toolCallId
                             )
                         )
@@ -965,116 +1062,17 @@ class OpenRouterClient @Inject constructor(
 
     /**
      * Attempt to repair common JSON malformations produced by LLMs.
-     * Handles: trailing commas, unclosed strings/braces/brackets, and
-     * markdown code fences wrapping JSON.
-     *
-     * All transformations are string-context-aware to avoid corrupting
-     * values inside JSON strings (e.g. a path containing ",}").
+     * The implementation lives in [JsonRepair] so it can be unit-tested
+     * without Android/network dependencies.
      */
-    private fun repairMalformedJson(input: String): String {
-        // Guard against excessively large inputs
-        if (input.length > MAX_REPAIRABLE_JSON_LENGTH) return input
-
-        var s = input.trim()
-
-        // Strip markdown code fences: ```json ... ``` or ``` ... ```
-        if (s.startsWith("```")) {
-            val firstNewline = s.indexOf('\n')
-            s = if (firstNewline > 0) s.substring(firstNewline + 1) else s.removePrefix("```")
-            if (s.endsWith("```")) {
-                s = s.dropLast(3).trimEnd()
-            }
-        }
-
-        // Single-pass walk: track string context, trailing commas, and bracket depth.
-        var inString = false
-        var escaped = false
-        val stack = mutableListOf<Char>()
-        val sb = StringBuilder(s.length + 16)
-        // Buffer to hold a comma + optional whitespace so we can drop it
-        // if the next non-whitespace char is } or ].
-        var pendingComma: StringBuilder? = null
-
-        for (ch in s) {
-            if (inString) {
-                pendingComma?.let { sb.append(it); pendingComma = null }
-                sb.append(ch)
-                if (escaped) {
-                    escaped = false
-                } else when (ch) {
-                    '\\' -> escaped = true
-                    '"' -> inString = false
-                }
-            } else {
-                when (ch) {
-                    ',' -> {
-                        // Buffer the comma — flush it only if not followed by } or ]
-                        if (pendingComma == null) pendingComma = StringBuilder()
-                        pendingComma!!.append(ch)
-                    }
-                    '}', ']' -> {
-                        // Drop any buffered trailing comma before a closer
-                        pendingComma = null
-                        sb.append(ch)
-                        if (ch == '}' && stack.lastOrNull() == '{') stack.removeLast()
-                        else if (ch == ']' && stack.lastOrNull() == '[') stack.removeLast()
-                    }
-                    else -> {
-                        if (ch.isWhitespace() && pendingComma != null) {
-                            // Accumulate whitespace into the pending comma buffer
-                            // so ",  }" correctly drops the comma + whitespace.
-                            pendingComma!!.append(ch)
-                        } else {
-                            // Non-whitespace after comma — flush buffer, it's not trailing
-                            pendingComma?.let { sb.append(it); pendingComma = null }
-                            sb.append(ch)
-                            when (ch) {
-                                '"' -> inString = true
-                                '{' -> stack.add('{')
-                                '[' -> stack.add('[')
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Flush any trailing buffered comma (will be stripped if we close brackets)
-        pendingComma?.let { sb.append(it) }
-
-        // If JSON already parses cleanly after comma repair, return early.
-        val commaRepaired = sb.toString()
-        runCatching { json.parseToJsonElement(commaRepaired) }.onSuccess { return commaRepaired }
-
-        // Close an unterminated string
-        if (inString) sb.append('"')
-
-        // Remove a dangling comma/whitespace at the end before closing brackets
-        while (sb.isNotEmpty() && (sb.last() == ',' || sb.last().isWhitespace())) {
-            sb.deleteCharAt(sb.length - 1)
-        }
-
-        // Close unclosed braces/brackets in reverse order.
-        // Limit to a reasonable depth to avoid synthesizing deeply nested structures
-        // from adversarial input.
-        val unclosedCount = stack.size.coerceAtMost(MAX_REPAIR_BRACKET_DEPTH)
-        for (i in (stack.size - unclosedCount) until stack.size) {
-            val idx = stack.size - 1 - (i - (stack.size - unclosedCount))
-            when (stack[idx]) {
-                '{' -> sb.append('}')
-                '[' -> sb.append(']')
-            }
-        }
-
-        return sb.toString()
-    }
+    private fun repairMalformedJson(input: String): String = JsonRepair.repair(input)
 
     private fun sanitizeErrorMessage(message: String?): String {
-        return message
+        return SecretRedaction.redact(message)
             ?.replace('\n', ' ')
             ?.replace('\r', ' ')
             ?.trim()
-            ?.take(180)
+            ?.take(MAX_ERROR_MESSAGE_CHARS)
             ?.takeIf { it.isNotEmpty() }
             ?: "invalid format"
     }
@@ -1239,7 +1237,28 @@ class OpenRouterClient @Inject constructor(
      * Format command result for tool response
      */
     fun formatResult(result: CommandResult): String {
-        return json.encodeToString(result)
+        // File contents and CLI output can be arbitrarily large. Clamp them
+        // before they enter the conversation so one read_file cannot evict the
+        // system prompt or blow the model's context window.
+        val capped = result.copy(
+            error = result.error?.let { ToolOutput.truncate(it, ToolOutput.MAX_FIELD_BYTES) },
+            data = result.data?.let { data ->
+                data.copy(
+                    content = data.content?.let { ToolOutput.truncate(it, ToolOutput.MAX_FIELD_BYTES) },
+                    message = data.message?.let { ToolOutput.truncate(it, ToolOutput.MAX_FIELD_BYTES) },
+                    entries = data.entries?.let { entries ->
+                        if (entries.size <= ToolOutput.MAX_ENTRIES) entries
+                        else entries.take(ToolOutput.MAX_ENTRIES)
+                    }
+                )
+            }
+        )
+        val encoded = json.encodeToString(capped)
+        return if (encoded.length > ToolOutput.MAX_RESULT_BYTES) {
+            ToolOutput.truncate(encoded, ToolOutput.MAX_RESULT_BYTES)
+        } else {
+            encoded
+        }
     }
 
     /**
@@ -1388,6 +1407,7 @@ class OpenRouterClient @Inject constructor(
     companion object {
         private const val TAG = "OpenRouterClient"
         private const val OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+        private const val TOOL_NAME = "execute_command"
         private const val DNS_RESOLUTION_ERROR_MESSAGE =
             "Cannot resolve openrouter.ai (DNS/network issue). Verify internet access, disable broken Private DNS/VPN, then retry."
         private const val EXPECTED_TOOL_ARGUMENTS_FORMAT =
@@ -1400,10 +1420,16 @@ class OpenRouterClient @Inject constructor(
         private const val TOOL_CALL_RESPONSE_MAX_TOKENS = 1024
         private const val FORGE_RESPONSE_MAX_TOKENS = 6144
         private const val DEFAULT_RESPONSE_MAX_TOKENS = 720
-        /** Max input size for JSON repair to prevent resource exhaustion. */
-        private const val MAX_REPAIRABLE_JSON_LENGTH = 100_000
-        /** Max unclosed brackets the repair function will close. */
-        private const val MAX_REPAIR_BRACKET_DEPTH = 10
+
+        // Timeouts (seconds). Call timeout is the outer bound for one HTTP exchange.
+        private const val CONNECT_TIMEOUT_SECONDS = 15L
+        private const val READ_TIMEOUT_SECONDS = 120L
+        private const val WRITE_TIMEOUT_SECONDS = 30L
+        private const val CALL_TIMEOUT_SECONDS = 180L
+
+        /** Error bodies are truncated and redacted before they reach logs or the UI. */
+        private const val MAX_ERROR_BODY_CHARS = 300
+        private const val MAX_ERROR_MESSAGE_CHARS = 180
 
         private val SUPPORTED_ACTIONS = listOf(
             "list_directory",

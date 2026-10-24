@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark launch theme. The app is dark-only; this removes the white
+         starting window and keeps system bar icons light before Compose
+         draws its first frame. -->
+    <style name="Theme.Vesper" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/vesper_window_background</item>
+        <item name="android:colorAccent">@color/vesper_accent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

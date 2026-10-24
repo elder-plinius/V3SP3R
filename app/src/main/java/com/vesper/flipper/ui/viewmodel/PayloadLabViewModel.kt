@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.vesper.flipper.ai.*
 import com.vesper.flipper.ai.ToolResult as AiToolResult
 import com.vesper.flipper.domain.model.*
+import com.vesper.flipper.domain.service.AuditService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +33,7 @@ import javax.inject.Inject
 class PayloadLabViewModel @Inject constructor(
     private val payloadEngine: PayloadEngine,
     private val toolExecutor: FlipperToolExecutor,
+    private val auditService: AuditService,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -223,6 +225,7 @@ class PayloadLabViewModel @Inject constructor(
             when (result) {
                 is AiToolResult.Success -> {
                     _saveSuccess.value = result.message
+                    logSave("badusb", name, script.length)
                 }
                 is AiToolResult.Error -> {
                     _error.value = result.message
@@ -231,6 +234,28 @@ class PayloadLabViewModel @Inject constructor(
 
             _isSaving.value = false
         }
+    }
+
+    /**
+     * Direct writes from this editor are user-initiated, so they do not need an
+     * agent approval, but they must still appear in the audit log.
+     */
+    private fun logSave(kind: String, name: String, bytes: Int) {
+        auditService.log(
+            AuditEntry(
+                actionType = AuditActionType.COMMAND_EXECUTED,
+                riskLevel = RiskLevel.MEDIUM,
+                userApproved = true,
+                approvalMethod = ApprovalMethod.HOLD_CONFIRM,
+                sessionId = auditService.getCurrentSessionId() ?: "payload-lab",
+                metadata = mapOf(
+                    "source" to "payload-lab",
+                    "kind" to kind,
+                    "name" to name,
+                    "bytes" to bytes.toString()
+                )
+            )
+        )
     }
 
     /**
@@ -372,6 +397,7 @@ class PayloadLabViewModel @Inject constructor(
             when (result) {
                 is AiToolResult.Success -> {
                     _saveSuccess.value = result.message
+                    logSave("evil_portal", name, html.length)
                 }
                 is AiToolResult.Error -> {
                     _error.value = result.message

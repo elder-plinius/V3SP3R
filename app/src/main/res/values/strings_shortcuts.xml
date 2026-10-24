@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_chat_short">Chat</string>
+    <string name="shortcut_chat_long">Talk to your Flipper</string>
+    <string name="shortcut_device_short">Device</string>
+    <string name="shortcut_device_long">Connect and control</string>
+    <string name="shortcut_audit_short">Audit</string>
+    <string name="shortcut_audit_long">Review recent actions</string>
+</resources>

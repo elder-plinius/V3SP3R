@@ -13,8 +13,13 @@ import java.util.UUID
  * - Sub-GHz devices (remotes, sensors, key fobs)
  * - NFC/RFID tags
  * - WiFi access points (via ESP32 Marauder)
+ *
+ * Schema version 1.
+ *
+ * No upgrade migration exists yet because the schema has never been bumped.
+ * `fallbackToDestructiveMigrationOnDowngrade` keeps old installs from
+ * crashing after a downgrade without silently wiping data on upgrade.
  */
-
 @Database(
     entities = [
         TrackedDevice::class,
@@ -41,7 +46,7 @@ abstract class DeviceDatabase : RoomDatabase() {
                     DeviceDatabase::class.java,
                     "vesper_devices.db"
                 )
-                    .fallbackToDestructiveMigration()
+                    .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
                 INSTANCE = instance
                 instance

@@ -76,16 +76,16 @@ class CommandExecutor @Inject constructor(
             )
 
             RiskLevel.MEDIUM -> {
-                val autoApprove = settingsStore.autoApproveMedium.first()
-                if (!autoApprove && (riskAssessment.requiresDiff || riskAssessment.requiresConfirmation)) {
-                    requestApproval(
-                        command = command,
-                        riskAssessment = riskAssessment,
-                        sessionId = sessionId,
-                        startTime = startTime,
-                        traceId = traceId
-                    )
-                } else {
+                // "Auto-approve medium" is no longer a blanket switch: it only
+                // covers project-scoped writes (see AutoApprovePolicy).
+                val autoApprove = AutoApprovePolicy.shouldAutoApprove(
+                    command = command,
+                    assessment = riskAssessment,
+                    autoApproveMedium = settingsStore.autoApproveMedium.first(),
+                    autoApproveHigh = false,
+                    defaultProjectPath = settingsStore.defaultProjectPath.first()
+                )
+                if (autoApprove) {
                     executeDirectly(
                         command = command,
                         sessionId = sessionId,
@@ -93,11 +93,25 @@ class CommandExecutor @Inject constructor(
                         riskLevel = riskAssessment.level,
                         traceId = traceId
                     )
+                } else {
+                    requestApproval(
+                        command = command,
+                        riskAssessment = riskAssessment,
+                        sessionId = sessionId,
+                        startTime = startTime,
+                        traceId = traceId
+                    )
                 }
             }
 
             RiskLevel.HIGH -> {
-                val autoApprove = settingsStore.autoApproveHigh.first()
+                val autoApprove = AutoApprovePolicy.shouldAutoApprove(
+                    command = command,
+                    assessment = riskAssessment,
+                    autoApproveMedium = false,
+                    autoApproveHigh = settingsStore.autoApproveHigh.first(),
+                    defaultProjectPath = settingsStore.defaultProjectPath.first()
+                )
                 if (autoApprove) {
                     executeDirectly(
                         command = command,
@@ -146,6 +160,32 @@ class CommandExecutor @Inject constructor(
         riskLevel: RiskLevel,
         traceId: String
     ): CommandResult {
+        // Defense in depth: re-classify immediately before touching the device.
+        // A Settings unlock can expire between assessment and execution, and an
+        // approval captured earlier must never resurrect a blocked path.
+        val finalCheck = riskAssessor.assess(command)
+        if (finalCheck.level == RiskLevel.BLOCKED) {
+            val blockedResult = CommandResult(
+                success = false,
+                action = command.action,
+                error = "Blocked: ${finalCheck.blockedReason ?: "This path is protected"}",
+                executionTimeMs = System.currentTimeMillis() - startTime
+            )
+            auditService.log(
+                AuditEntry(
+                    actionType = AuditActionType.COMMAND_BLOCKED,
+                    command = command,
+                    riskLevel = RiskLevel.BLOCKED,
+                    sessionId = sessionId,
+                    metadata = mapOf(
+                        "reason" to "reassessed_blocked",
+                        "trace_id" to traceId
+                    )
+                )
+            )
+            return blockedResult
+        }
+
         var executionTime: Long = 0
         val result = try {
             val data: CommandResultData?
@@ -260,6 +300,29 @@ class CommandExecutor @Inject constructor(
 
         val startTime = System.currentTimeMillis()
         val traceId = approval.traceId ?: approval.id
+
+        // Re-assess on approval: permissions, project scope and Settings unlocks
+        // may have changed while the dialog was open.
+        val reAssessment = riskAssessor.assess(approval.command)
+        if (reAssessment.level == RiskLevel.BLOCKED) {
+            auditService.log(
+                AuditEntry(
+                    actionType = AuditActionType.COMMAND_BLOCKED,
+                    command = approval.command,
+                    riskLevel = RiskLevel.BLOCKED,
+                    sessionId = sessionId,
+                    metadata = mapOf(
+                        "reason" to "approval_no_longer_allowed",
+                        "trace_id" to traceId
+                    )
+                )
+            )
+            return CommandResult(
+                success = false,
+                action = approval.command.action,
+                error = "Blocked: ${reAssessment.blockedReason ?: "This path is no longer unlocked"}"
+            )
+        }
 
         auditService.log(
             AuditEntry(
