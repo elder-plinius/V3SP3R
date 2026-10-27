@@ -291,7 +291,7 @@ class VesperAgent @Inject constructor(
         // (with images intact) are kept for UI display and persistence.
         var apiMessages: MutableList<ChatMessage> = currentMessages.toMutableList()
         val hasImages = currentMessages.any { !it.imageAttachments.isNullOrEmpty() }
-        if (hasImages) {
+        if (hasImages && settingsStore.aiProvider.first() != SettingsStore.PROVIDER_OLLAMA) {
             val apiKey = settingsStore.apiKey.first()
             if (apiKey != null) {
                 try {

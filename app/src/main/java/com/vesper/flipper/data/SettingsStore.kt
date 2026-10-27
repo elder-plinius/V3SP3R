@@ -17,6 +17,31 @@ class SettingsStore @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
 
+    // AI provider selection and Ollama OpenAI-compatible endpoint
+    private val AI_PROVIDER = stringPreferencesKey("ai_provider")
+    val aiProvider: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[AI_PROVIDER] ?: PROVIDER_OPENROUTER
+    }
+    suspend fun setAiProvider(provider: String) {
+        context.dataStore.edit { preferences -> preferences[AI_PROVIDER] = provider }
+    }
+
+    private val OLLAMA_BASE_URL = stringPreferencesKey("ollama_base_url")
+    val ollamaBaseUrl: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[OLLAMA_BASE_URL] ?: DEFAULT_OLLAMA_BASE_URL
+    }
+    suspend fun setOllamaBaseUrl(url: String) {
+        context.dataStore.edit { preferences -> preferences[OLLAMA_BASE_URL] = url.trim().trimEnd('/') }
+    }
+
+    private val OLLAMA_MODEL = stringPreferencesKey("ollama_model")
+    val ollamaModel: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[OLLAMA_MODEL] ?: DEFAULT_OLLAMA_MODEL
+    }
+    suspend fun setOllamaModel(model: String) {
+        context.dataStore.edit { preferences -> preferences[OLLAMA_MODEL] = model.trim() }
+    }
+
     // OpenRouter API Key
     private val API_KEY = stringPreferencesKey("openrouter_api_key")
 
@@ -301,6 +326,11 @@ class SettingsStore @Inject constructor(
     }
 
     companion object {
+        const val PROVIDER_OPENROUTER = "openrouter"
+        const val PROVIDER_OLLAMA = "ollama"
+        const val DEFAULT_OLLAMA_BASE_URL = "http://10.0.2.2:11434/v1"
+        const val DEFAULT_OLLAMA_MODEL = "qwen3:8b"
+
         // Default to the largest Hermes 4 model on OpenRouter.
         const val DEFAULT_MODEL = "nousresearch/hermes-4-405b"
         // Shimmer: soft, warm female — default TTS voice (OpenAI via OpenRouter)

@@ -1,0 +1,43 @@
+name: Build Ollama APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master, ollama-integration]
+    paths:
+      - 'app/src/**'
+      - 'app/build.gradle.kts'
+      - 'build.gradle.kts'
+      - 'gradle/**'
+      - '.github/workflows/build-ollama-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - name: Install Android platform and build tools
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Replace developer-specific SDK path
+        run: printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
+      - name: Build debug APK
+        run: bash ./gradlew :app:assembleDebug --no-daemon --max-workers=2 --console=plain
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: V3SP3R-Ollama-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

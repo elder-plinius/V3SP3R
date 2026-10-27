@@ -82,15 +82,24 @@ class OpenRouterClient @Inject constructor(
             )
         }
 
-        val apiKey = settingsStore.apiKey.first()
-            ?: return@withContext ChatCompletionResult.Error("OpenRouter API key not configured")
-
-        // Validate API key format
-        if (!InputValidator.isValidApiKey(apiKey)) {
+        val provider = settingsStore.aiProvider.first()
+        val ollama = provider == SettingsStore.PROVIDER_OLLAMA
+        val apiKey = if (ollama) {
+            "ollama"
+        } else {
+            settingsStore.apiKey.first()
+                ?: return@withContext ChatCompletionResult.Error("OpenRouter API key not configured")
+        }
+        if (!ollama && !InputValidator.isValidApiKey(apiKey)) {
             return@withContext ChatCompletionResult.Error("Invalid API key format")
         }
-
-        val model = settingsStore.selectedModel.first()
+        val apiUrl = if (ollama) {
+            normalizeOllamaChatUrl(settingsStore.ollamaBaseUrl.first())
+        } else OPENROUTER_API_URL
+        val model = if (ollama) settingsStore.ollamaModel.first() else settingsStore.selectedModel.first()
+        if (ollama && model.isBlank()) {
+            return@withContext ChatCompletionResult.Error("Enter an Ollama model name in Settings")
+        }
 
         val compactMessages = trimConversationForRequest(messages)
 
@@ -98,7 +107,7 @@ class OpenRouterClient @Inject constructor(
         // calling chat(). If images somehow survive (e.g. direct chat() call), handle
         // them here as a safety net.
         val hasImages = compactMessages.any { !it.imageAttachments.isNullOrEmpty() }
-        val processedMessages = if (hasImages) {
+        val processedMessages = if (hasImages && !ollama) {
             Log.w(TAG, "chat(): images still present at chat() entry — running safety-net preprocessing")
             preprocessImagesAsText(compactMessages, apiKey)
         } else {
@@ -118,7 +127,7 @@ class OpenRouterClient @Inject constructor(
             addAll(sanitizeAndBuildRequestMessages(processedMessages))
         }
 
-        val candidateModels = buildToolModelCandidates(model)
+        val candidateModels = if (ollama) listOf(model) else buildToolModelCandidates(model)
         var lastError: ChatCompletionResult.Error? = null
         val attemptedModels = mutableListOf<String>()
         val unsupportedModels = mutableListOf<String>()
@@ -136,7 +145,8 @@ class OpenRouterClient @Inject constructor(
                     apiKey = apiKey,
                     model = candidateModel,
                     messages = requestMessages,
-                    includeGlassesActions = glassesEnabled
+                    includeGlassesActions = glassesEnabled,
+                    apiUrl = apiUrl
                 )
             )
 
@@ -438,7 +448,8 @@ class OpenRouterClient @Inject constructor(
         apiKey: String,
         model: String,
         messages: List<OpenRouterMessage>,
-        includeGlassesActions: Boolean = false
+        includeGlassesActions: Boolean = false,
+        apiUrl: String = OPENROUTER_API_URL
     ): Request {
         val tool = if (includeGlassesActions) EXECUTE_COMMAND_TOOL else buildToolWithoutGlasses()
         val request = OpenRouterRequest(
@@ -452,14 +463,15 @@ class OpenRouterClient @Inject constructor(
         val requestBody = json.encodeToString(request)
             .toRequestBody("application/json".toMediaType())
 
-        return Request.Builder()
-            .url(OPENROUTER_API_URL)
+        val builder = Request.Builder()
+            .url(apiUrl)
             .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Content-Type", "application/json")
-            .addHeader("HTTP-Referer", "https://vesper.flipper.app")
-            .addHeader("X-Title", "Vesper Flipper Control")
-            .post(requestBody)
-            .build()
+        if (apiUrl == OPENROUTER_API_URL) {
+            builder.addHeader("HTTP-Referer", "https://vesper.flipper.app")
+                .addHeader("X-Title", "Vesper Flipper Control")
+        }
+        return builder.post(requestBody).build()
     }
 
     /**
@@ -1388,6 +1400,15 @@ class OpenRouterClient @Inject constructor(
     companion object {
         private const val TAG = "OpenRouterClient"
         private const val OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+        private fun normalizeOllamaChatUrl(baseUrl: String): String {
+            val trimmed = baseUrl.trim().trimEnd('/')
+            return when {
+                trimmed.endsWith("/chat/completions") -> trimmed
+                trimmed.endsWith("/v1") -> "$trimmed/chat/completions"
+                else -> "$trimmed/v1/chat/completions"
+            }
+        }
         private const val DNS_RESOLUTION_ERROR_MESSAGE =
             "Cannot resolve openrouter.ai (DNS/network issue). Verify internet access, disable broken Private DNS/VPN, then retry."
         private const val EXPECTED_TOOL_ARGUMENTS_FORMAT =

@@ -14,6 +14,9 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class SettingsState(
+    val aiProvider: String = SettingsStore.PROVIDER_OPENROUTER,
+    val ollamaBaseUrl: String = SettingsStore.DEFAULT_OLLAMA_BASE_URL,
+    val ollamaModel: String = SettingsStore.DEFAULT_OLLAMA_MODEL,
     val apiKey: String = "",
     val selectedModel: String = SettingsStore.DEFAULT_MODEL,
     val aiMaxIterations: Int = SettingsStore.DEFAULT_AI_MAX_ITERATIONS,
@@ -64,6 +67,9 @@ class SettingsViewModel @Inject constructor(
     private fun loadSettings() {
         viewModelScope.launch {
             combine(
+                settingsStore.aiProvider,
+                settingsStore.ollamaBaseUrl,
+                settingsStore.ollamaModel,
                 settingsStore.apiKey,
                 settingsStore.selectedModel,
                 settingsStore.aiMaxIterations,
@@ -75,15 +81,18 @@ class SettingsViewModel @Inject constructor(
                 settingsStore.auditRetentionDays
             ) { values ->
                 SettingsState(
-                    apiKey = (values[0] as? String) ?: "",
-                    selectedModel = values[1] as String,
-                    aiMaxIterations = values[2] as Int,
-                    autoConnect = values[3] as Boolean,
-                    defaultProjectPath = values[4] as String,
-                    permissionDuration = values[5] as Long,
-                    hapticFeedback = values[6] as Boolean,
-                    darkMode = values[7] as Boolean,
-                    auditRetentionDays = values[8] as Int
+                    aiProvider = values[0] as String,
+                    ollamaBaseUrl = values[1] as String,
+                    ollamaModel = values[2] as String,
+                    apiKey = (values[3] as? String) ?: "",
+                    selectedModel = values[4] as String,
+                    aiMaxIterations = values[5] as Int,
+                    autoConnect = values[6] as Boolean,
+                    defaultProjectPath = values[7] as String,
+                    permissionDuration = values[8] as Long,
+                    hapticFeedback = values[9] as Boolean,
+                    darkMode = values[10] as Boolean,
+                    auditRetentionDays = values[11] as Int
                 )
             }.combine(
                 combine(
@@ -138,6 +147,9 @@ class SettingsViewModel @Inject constructor(
                 )
             }.collect { settings ->
                 _state.update { it.copy(
+                    aiProvider = settings.aiProvider,
+                    ollamaBaseUrl = settings.ollamaBaseUrl,
+                    ollamaModel = settings.ollamaModel,
                     apiKey = settings.apiKey,
                     selectedModel = settings.selectedModel,
                     aiMaxIterations = settings.aiMaxIterations,
@@ -168,6 +180,27 @@ class SettingsViewModel @Inject constructor(
             permissionService.activePermissions.collect { permissions ->
                 _state.update { it.copy(activePermissions = permissions) }
             }
+        }
+    }
+
+    fun setAiProvider(provider: String) {
+        viewModelScope.launch {
+            settingsStore.setAiProvider(provider)
+            _state.update { it.copy(aiProvider = provider) }
+        }
+    }
+
+    fun setOllamaBaseUrl(url: String) {
+        viewModelScope.launch {
+            settingsStore.setOllamaBaseUrl(url)
+            _state.update { it.copy(ollamaBaseUrl = url) }
+        }
+    }
+
+    fun setOllamaModel(model: String) {
+        viewModelScope.launch {
+            settingsStore.setOllamaModel(model)
+            _state.update { it.copy(ollamaModel = model) }
         }
     }
 

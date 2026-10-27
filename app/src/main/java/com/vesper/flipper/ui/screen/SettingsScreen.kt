@@ -54,7 +54,63 @@ fun SettingsScreen(
         ) {
             // API Configuration Section
             item {
-                SettingsSection(title = "API Configuration") {
+                SettingsSection(title = "AI Provider") {
+                    var providerExpanded by remember { mutableStateOf(false) }
+                    ExposedDropdownMenuBox(
+                        expanded = providerExpanded,
+                        onExpandedChange = { providerExpanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = if (state.aiProvider == SettingsStore.PROVIDER_OLLAMA) "Ollama (local)" else "OpenRouter",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Provider") },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerExpanded) },
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = providerExpanded,
+                            onDismissRequest = { providerExpanded = false }
+                        ) {
+                            DropdownMenuItem(text = { Text("OpenRouter") }, onClick = {
+                                viewModel.setAiProvider(SettingsStore.PROVIDER_OPENROUTER)
+                                providerExpanded = false
+                            })
+                            DropdownMenuItem(text = { Text("Ollama (local) — OpenAI compatible") }, onClick = {
+                                viewModel.setAiProvider(SettingsStore.PROVIDER_OLLAMA)
+                                providerExpanded = false
+                            })
+                        }
+                    }
+                    if (state.aiProvider == SettingsStore.PROVIDER_OLLAMA) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = state.ollamaBaseUrl,
+                            onValueChange = { viewModel.setOllamaBaseUrl(it) },
+                            label = { Text("Ollama server URL") },
+                            placeholder = { Text("http://192.168.1.20:11434") },
+                            supportingText = { Text("Use your computer's LAN IP; localhost refers to this phone. Ollama must be reachable on your network.") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        OutlinedTextField(
+                            value = state.ollamaModel,
+                            onValueChange = { viewModel.setOllamaModel(it) },
+                            label = { Text("Ollama model") },
+                            placeholder = { Text("qwen3:8b") },
+                            supportingText = { Text("Enter the exact model tag installed in Ollama.") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Text(
+                            "Agent tool execution requires a model with tool-calling support. Photos, payload helpers, and OpenRouter TTS remain OpenRouter-only.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
                     // API Key
                     OutlinedTextField(
                         value = state.apiKey,
@@ -164,6 +220,8 @@ fun SettingsScreen(
                             }
                         }
                     }
+
+                    } // OpenRouter-only key and model controls
 
                     Spacer(modifier = Modifier.height(12.dp))
 
