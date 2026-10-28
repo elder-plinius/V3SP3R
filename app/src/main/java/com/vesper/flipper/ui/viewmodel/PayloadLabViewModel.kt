@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
+import androidx.core.graphics.scale
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vesper.flipper.ai.*
@@ -431,7 +432,7 @@ class PayloadLabViewModel @Inject constructor(
             } else {
                 (maxSize * ratio).toInt() to maxSize
             }
-            Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+            bitmap.scale(newWidth, newHeight, filter = true)
         } else {
             bitmap
         }

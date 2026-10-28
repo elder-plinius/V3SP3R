@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vesper.flipper.ble.FlipperFileSystem
 import com.vesper.flipper.data.SettingsStore
+import com.vesper.flipper.data.awaitProviderResponse
 import com.vesper.flipper.domain.model.*
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +29,10 @@ class SpectralOracleViewModel @Inject constructor(
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(180, TimeUnit.SECONDS) // Long timeout for analysis
+        .callTimeout(180, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .retryOnConnectionFailure(false)
         .build()
 
     private val json = Json {
@@ -144,6 +149,8 @@ class SpectralOracleViewModel @Inject constructor(
 
                 _analysisProgress.value = "Analysis complete"
 
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _error.value = "Analysis failed: ${e.message}"
             } finally {
@@ -176,15 +183,15 @@ class SpectralOracleViewModel @Inject constructor(
 
     private suspend fun performAIAnalysis(request: SignalIntelRequest): OracleAnalysisResult =
         withContext(Dispatchers.IO) {
-            val apiKey = settingsStore.apiKey.first()
-                ?: throw Exception("API key not configured")
-
-            val model = settingsStore.selectedModel.first()
+            val config = settingsStore.aiConnectionConfig.first()
+            config.validationError()?.let { throw IllegalArgumentException(it) }
+            val apiKey = config.apiKey!!
+            val model = config.model
             val prompt = OraclePrompts.buildAnalysisPrompt(request)
 
             val requestBody = """
             {
-                "model": "$model",
+                "model": ${json.encodeToString(kotlinx.serialization.serializer(), model)},
                 "messages": [
                     {
                         "role": "system",
@@ -201,7 +208,7 @@ class SpectralOracleViewModel @Inject constructor(
             """.trimIndent()
 
             val httpRequest = Request.Builder()
-                .url("https://openrouter.ai/api/v1/chat/completions")
+                .url("${config.provider.baseUrl}/chat/completions")
                 .addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json")
                 .addHeader("HTTP-Referer", "https://vesper.flipper.app")
@@ -210,8 +217,8 @@ class SpectralOracleViewModel @Inject constructor(
                 .build()
 
             try {
-                val response = client.newCall(httpRequest).execute()
-                val responseBody = response.body?.string()
+                val response = client.newCall(httpRequest).awaitProviderResponse()
+                val responseBody = response.body
                     ?: throw Exception("Empty response from AI")
 
                 if (!response.isSuccessful) {
@@ -221,7 +228,7 @@ class SpectralOracleViewModel @Inject constructor(
                 parseAIResponse(responseBody, request)
             } catch (_: UnknownHostException) {
                 throw Exception(
-                    "Cannot resolve openrouter.ai (DNS/network issue). Verify internet access, disable broken Private DNS/VPN, then retry."
+                    "Cannot resolve ${config.provider.displayName} (DNS/network issue). Verify internet access, disable broken Private DNS/VPN, then retry."
                 )
             }
         }

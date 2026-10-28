@@ -17,6 +17,12 @@ val localProps = Properties().apply {
     }
 }
 
+// The installed build owns its update channel. Upstream PR merges never switch it.
+val updateRepository = providers.gradleProperty("vesper.updateRepository").orElse("elder-plinius/V3SP3R").get()
+val updateChannel = providers.gradleProperty("vesper.updateChannel").orElse("upstream-stable").get()
+require(Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}").matches(updateRepository))
+require(Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,63}").matches(updateChannel))
+
 android {
     namespace = "com.vesper.flipper"
     compileSdk = 35
@@ -25,8 +31,11 @@ android {
         applicationId = "com.vesper.flipper"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 7
+        versionName = "1.0.6-grounded-assist"
+        buildConfigField("String", "UPDATE_REPOSITORY", "\"$updateRepository\"")
+        buildConfigField("String", "UPDATE_CHANNEL", "\"$updateChannel\"")
+        buildConfigField("String", "UPDATE_CAPABILITIES", "\"multi-provider-v1,exact-model-id-v1,safe-update-check-v1\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -80,6 +89,8 @@ android {
         jvmTarget = "17"
     }
 
+    testOptions { unitTests.isReturnDefaultValues = true }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -93,6 +104,11 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
+    testImplementation("io.mockk:mockk:1.13.16")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     // Compose BOM & UI
     val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
     implementation(composeBom)

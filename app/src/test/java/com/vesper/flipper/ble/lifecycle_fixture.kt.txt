@@ -1,0 +1,626 @@
+package com.vesper.flipper.ble
+
+import org.junit.Assert.*
+import org.junit.Test
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.*
+
+// Android boundary fakes only. The service lifecycle methods and the entire
+// BleServiceManager implementation are copied verbatim by the runner.
+annotation class Inject
+annotation class Singleton
+annotation class ApplicationContext
+class ComponentName
+interface IBinder
+interface ServiceConnection {
+    fun onServiceConnected(name: ComponentName?, binder: IBinder?)
+    fun onServiceDisconnected(name: ComponentName?)
+    fun onNullBinding(name: ComponentName?) {}
+    fun onBindingDied(name: ComponentName?) {}
+}
+class Intent {
+    var action: String? = null
+    fun setPackage(name: String) = this
+    constructor(action: String?) { this.action = action }
+    constructor(context: Context, klass: Class<*>)
+}
+object Manifest { object permission {
+    const val BLUETOOTH_CONNECT = "connect"
+    const val BLUETOOTH_SCAN = "scan"
+    const val BLUETOOTH = "bluetooth"
+    const val BLUETOOTH_ADMIN = "admin"
+} }
+object PackageManager { const val PERMISSION_GRANTED = 0 }
+object ContextCompat {
+    fun checkSelfPermission(context: Context, permission: String) =
+        if (permission in context.permissions) 0 else -1
+}
+object ActivityCompat {
+    fun checkSelfPermission(context: Context, permission: String) =
+        ContextCompat.checkSelfPermission(context, permission)
+}
+class PendingIntent {
+    companion object {
+        fun getBroadcast(context: Context, code: Int, intent: Intent, flags: Int) = PendingIntent()
+    }
+}
+class UsbDevice(var granted: Boolean)
+class UsbManager {
+    val deviceList = mutableMapOf<String, UsbDevice>()
+    var onRequest: (UsbDevice) -> Unit = {}
+    fun hasPermission(device: UsbDevice) = device.granted
+    fun requestPermission(device: UsbDevice, intent: PendingIntent) = onRequest(device)
+}
+class BluetoothAdapter {
+    var scannerReads = 0
+    var failScanner = false
+    val scanner = BluetoothLeScanner()
+    val isEnabled = true
+    val bluetoothLeScanner: BluetoothLeScanner?
+        get() {
+            scannerReads++
+            if (failScanner) throw SecurityException("scanner permission revoked")
+            return scanner
+        }
+}
+class BluetoothLeScanner {
+    var starts = 0
+    fun startScan(filters: List<ScanFilter>?, settings: ScanSettings, callback: Any) { starts++ }
+}
+class ParcelUuid(val value: java.util.UUID)
+class ScanFilter {
+    class Builder { fun setServiceUuid(value: ParcelUuid) = this; fun build() = ScanFilter() }
+}
+class ScanSettings {
+    class Builder {
+        fun setScanMode(value: Int) = this
+        fun setCallbackType(value: Int) = this
+        fun build() = ScanSettings()
+    }
+    companion object { const val SCAN_MODE_LOW_LATENCY = 1; const val CALLBACK_TYPE_ALL_MATCHES = 1 }
+}
+class BluetoothManager { val adapter = BluetoothAdapter() }
+open class Context {
+    val permissions = mutableSetOf("connect", "scan", "bluetooth", "admin")
+    val usb = UsbManager()
+    val bluetooth = BluetoothManager()
+    val notifications = android.app.NotificationManager()
+    var dispatches = 0
+    var dispatchFailure: RuntimeException? = null
+    var binds = 0
+    var unbinds = 0
+    var bindResult = true
+    var bindFailure: RuntimeException? = null
+    val connections = mutableListOf<ServiceConnection>()
+    val autoCreateBindings = mutableSetOf<ServiceConnection>()
+    var startRequested = false
+    var fgRequired = false
+    var fgWaiting = false
+    var foregroundWatchdogScheduled = false
+    var foregroundStartFailure = false
+    var destroying = false
+
+    fun runForegroundWatchdog() {
+        if (foregroundWatchdogScheduled && fgRequired && fgWaiting && !destroying) {
+            fgWaiting = false
+            foregroundStartFailure = true
+        }
+    }
+    fun getSystemService(name: String): Any? = when(name) {
+        USB_SERVICE -> usb
+        BLUETOOTH_SERVICE -> bluetooth
+        NOTIFICATION_SERVICE -> notifications
+        else -> null
+    }
+    fun startForegroundService(intent: Intent): ComponentName {
+        val component = startService(intent)
+        // Model an accepted request delivered to the app: Android arms the
+        // foreground-start timeout before onStartCommand executes.
+        fgRequired = true
+        fgWaiting = true
+        foregroundWatchdogScheduled = true
+        return component
+    }
+    fun startService(intent: Intent): ComponentName {
+        dispatches++
+        dispatchFailure?.let { throw it }
+        startRequested = true
+        return ComponentName()
+    }
+    fun bindService(intent: Intent, connection: ServiceConnection, flags: Int): Boolean {
+        binds++
+        connections.add(connection)
+        bindFailure?.let { throw it }
+        if (bindResult && flags and BIND_AUTO_CREATE != 0) autoCreateBindings.add(connection)
+        return bindResult
+    }
+    fun unbindService(connection: ServiceConnection) {
+        unbinds++
+        autoCreateBindings.remove(connection)
+    }
+    companion object {
+        const val USB_SERVICE = "usb"
+        const val BLUETOOTH_SERVICE = "bluetooth"
+        const val NOTIFICATION_SERVICE = "notification"
+        const val BIND_AUTO_CREATE = 1
+    }
+}
+open class Service : Context() {
+    open fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = 0
+    open fun onDestroy() {}
+    companion object { const val START_STICKY = 1; const val START_NOT_STICKY = 2 }
+}
+object Log { fun w(tag: String, message: String, error: Throwable? = null) {} }
+object Build {
+    object VERSION { var SDK_INT = 35 }
+    object VERSION_CODES { const val O = 26; const val S = 31 }
+}
+sealed class ConnectionState {
+    object Disconnected : ConnectionState()
+    object Scanning : ConnectionState()
+    data class Error(val message: String) : ConnectionState()
+    data class Connected(val name: String) : ConnectionState()
+}
+class FlipperDevice
+class CliCapabilityStatus(
+    val level: CliCapabilityLevel = CliCapabilityLevel.UNAVAILABLE,
+    val checkedAtMs: Long = 0,
+    val details: String = ""
+)
+enum class CliCapabilityLevel { UNAVAILABLE }
+class FlipperBleService : Service() {
+    val packageName = "test"
+    var pendingUsbPermissionRequest: CompletableDeferred<Boolean>? = null
+    val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    var scanStopFailure: SecurityException? = null
+    var scanStops = 0
+    var disconnects = 0
+    var disconnectedWhileForeground = false
+    fun unregisterUsbReceivers() {}
+    fun usbPermissionPendingIntentFlags() = 0
+    suspend fun ensureUsbForTest(device: UsbDevice) = ensureUsbPermission(usb, device)
+    var revokeDuringPromotion = false
+    var promotionFailure: RuntimeException? = null
+    var promotions = 0
+    var successfulPromotions = 0
+    var stops = 0
+    var removals = 0
+    var foregroundActive = false
+    var bluetoothAdapter: BluetoothAdapter? = null
+    var bleScanner: BluetoothLeScanner? = null
+    val connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
+    val discoveredDevices = MutableStateFlow<List<FlipperDevice>>(emptyList())
+    val _connectionState = connectionState
+    val _discoveredDevices = discoveredDevices
+    var broadScanStarted = false
+    val scanCallback = Any()
+    fun seedBondedFlippersIntoDiscoveredList() {}
+    fun startBroadScan() {}
+    fun notifyForTest() = updateNotification()
+    val connectedDevice = MutableStateFlow<FlipperDevice?>(null)
+    val cliCapabilityStatus = MutableStateFlow(CliCapabilityStatus())
+    inner class LocalBinder : IBinder { fun getService() = this@FlipperBleService }
+    fun createNotification() = Unit
+    fun startForeground(id: Int, notification: Unit) {
+        promotions++
+        // Android 15 ActiveServices.setServiceForegroundInnerLocked clears the
+        // accepted-start obligation BEFORE connectedDevice permission validation
+        // and background-start rejection. stopForeground does not do this.
+        fgRequired = false
+        fgWaiting = false
+        foregroundWatchdogScheduled = false
+        if (revokeDuringPromotion) permissions.clear()
+        promotionFailure?.let { throw it }
+        if (Build.VERSION.SDK_INT >= 34 &&
+            "connect" !in permissions && "scan" !in permissions &&
+            usb.deviceList.values.none { usb.hasPermission(it) }
+        ) throw SecurityException("connectedDevice transport permission missing")
+        successfulPromotions++
+    }
+    fun stopSelf() {
+        stops++
+        startRequested = false
+        // stopServiceTokenLocked cannot bring down a BIND_AUTO_CREATE-retained
+        // service. In particular it cannot cancel its foreground-start timer.
+        if (autoCreateBindings.isEmpty()) {
+            destroying = true
+            // bringDownServiceLocked reports an unmet obligation even on teardown.
+            if (fgRequired) foregroundStartFailure = true
+            fgRequired = false
+            fgWaiting = false
+            foregroundWatchdogScheduled = false
+        }
+    }
+    fun stopSelf(startId: Int) { stopSelf() }
+    fun stopForeground(flags: Int) { removals++ }
+
+    fun stopScan() { scanStops++; scanStopFailure?.let { throw it } }
+    fun connect(device: FlipperDevice) {}
+    fun connectUsbIfAvailable() {}
+    fun disconnect() { disconnects++; disconnectedWhileForeground = foregroundActive }
+    suspend fun sendRawData(data: ByteArray) = Result.success(data)
+    suspend fun probeCliCapability(force: Boolean) = CliCapabilityStatus()
+    fun initializeForTest() = initializeBluetooth()
+    // SERVICE_METHODS
+    companion object {
+        const val ACTION_START_FOREGROUND = "start"
+        const val ACTION_STOP = "stop"
+        const val NOTIFICATION_ID = 1
+        const val STOP_FOREGROUND_REMOVE = 1
+        const val TAG = "test"
+        const val ACTION_USB_PERMISSION = "usb-permission"
+        const val USB_PERMISSION_TIMEOUT_MS = 100L
+        const val BROAD_SCAN_FALLBACK_DELAY_MS = 60000L
+        const val SCAN_TIMEOUT_MS = 60000L
+        val FLIPPER_SCAN_SERVICE_UUIDS = emptyList<java.util.UUID>()
+        // COMPANION_METHODS
+    }
+}
+
+class ExtractedServiceStartupTest {
+    @Test fun acceptedUsbStartLosesEligibilityWhileBindingRetainsService() {
+        val service = FlipperBleService().apply {
+            permissions.clear()
+            usb.deviceList["flipper"] = UsbDevice(true)
+        }
+        val manager = BleServiceManager(service)
+        service.connections.single().onServiceConnected(null, service.LocalBinder())
+        try {
+            assertEquals(1, service.dispatches)
+            assertTrue(service.startRequested)
+            assertTrue(service.fgRequired)
+            assertTrue(service.fgWaiting)
+            assertTrue(service.foregroundWatchdogScheduled)
+            assertEquals(1, service.autoCreateBindings.size)
+
+            // The accepted request arrives after the only transport grant is lost.
+            service.usb.deviceList.clear()
+            assertEquals(Service.START_NOT_STICKY, service.onStartCommand(Intent("start"), 0, 1))
+            assertEquals(1, service.stops)
+            assertEquals(1, service.removals)
+            assertFalse(service.startRequested)
+            assertFalse(service.destroying)
+            assertEquals(1, service.autoCreateBindings.size)
+            assertSame(service, manager.getService())
+            service.runForegroundWatchdog()
+            assertFalse("Accepted foreground start left an undischarged watchdog while bound",
+                service.foregroundStartFailure)
+            assertFalse(service.fgRequired)
+            assertFalse(service.fgWaiting)
+            assertFalse(service.foregroundWatchdogScheduled)
+            assertEquals(1, service.promotions)
+            assertEquals(0, service.successfulPromotions)
+            assertFalse(service.foregroundActive)
+        } finally {
+            manager.unbindService()
+        }
+    }
+    @Test fun fakeBoundStopCannotDischargeAcceptedForegroundWatchdog() {
+        val service = FlipperBleService()
+        val manager = BleServiceManager(service)
+        try {
+            service.stopForeground(FlipperBleService.STOP_FOREGROUND_REMOVE)
+            service.stopSelf(1)
+            assertFalse(service.startRequested)
+            assertFalse(service.destroying)
+            assertTrue(service.fgRequired)
+            assertTrue(service.fgWaiting)
+            assertTrue(service.foregroundWatchdogScheduled)
+            service.runForegroundWatchdog()
+            assertTrue(service.foregroundStartFailure)
+        } finally {
+            manager.unbindService()
+        }
+    }
+    @Test fun grantRetryThroughActualStartScanAcquiresScanner() {
+        val service = FlipperBleService().apply { permissions.clear() }
+        service.initializeForTest()
+        assertNull(service.bleScanner)
+        service.permissions.addAll(listOf("connect", "scan"))
+        service.startScan()
+        assertEquals(1, service.bluetooth.adapter.scanner.starts)
+        service.onDestroy()
+    }
+    @Test fun boundOnlyOrDestroyedServiceDoesNotPostOrphanNotification() {
+        val service = FlipperBleService()
+        service.notifyForTest()
+        assertEquals(0, service.notifications.posts)
+        service.onStartCommand(Intent("start"), 0, 1)
+        service.notifyForTest()
+        assertEquals(1, service.notifications.posts)
+        service.onDestroy()
+        service.notifyForTest()
+        assertEquals(1, service.notifications.posts)
+    }
+    @Test fun backgroundDispatchRestrictionIsContainedWithoutUnbinding() {
+        val context = Context().apply { dispatchFailure = android.app.ForegroundServiceStartNotAllowedException() }
+        val manager = BleServiceManager(context)
+        assertEquals(1, context.binds)
+        assertEquals(0, context.unbinds)
+        manager.unbindService()
+    }
+    @Test fun backgroundPromotionRestrictionStopsNonSticky() {
+        val service = FlipperBleService().apply { promotionFailure = android.app.ForegroundServiceStartNotAllowedException() }
+        val manager = BleServiceManager(service)
+        try {
+            assertTrue(service.foregroundWatchdogScheduled)
+            assertEquals(Service.START_NOT_STICKY, service.onStartCommand(Intent("start"), 0, 1))
+            assertEquals(1, service.stops)
+            assertFalse(service.destroying)
+            assertFalse(service.fgRequired)
+            assertFalse(service.fgWaiting)
+            assertFalse(service.foregroundWatchdogScheduled)
+            service.runForegroundWatchdog()
+            assertFalse(service.foregroundStartFailure)
+            assertEquals(0, service.successfulPromotions)
+        } finally {
+            manager.unbindService()
+        }
+    }
+    @Test fun acceptedValidStartDischargesForegroundWatchdogAndRemainsSticky() {
+        val service = FlipperBleService()
+        assertTrue(FlipperBleService.startService(service))
+        assertTrue(service.foregroundWatchdogScheduled)
+        assertEquals(Service.START_STICKY, service.onStartCommand(Intent("start"), 0, 1))
+        assertTrue(service.foregroundActive)
+        assertEquals(1, service.successfulPromotions)
+        assertEquals(0, service.stops)
+        assertFalse(service.fgRequired)
+        assertFalse(service.fgWaiting)
+        assertFalse(service.foregroundWatchdogScheduled)
+        service.runForegroundWatchdog()
+        assertFalse(service.foregroundStartFailure)
+    }
+    @Test(expected = IllegalStateException::class)
+    fun unrelatedPromotionFailureIsNotHidden() {
+        val service = FlipperBleService().apply { promotionFailure = IllegalStateException("real bug") }
+        service.onStartCommand(null, 0, 1)
+    }
+    @Test fun legacyForegroundServiceDoesNotRequireAndroid12BluetoothGrants() {
+        try {
+            Build.VERSION.SDK_INT = 30
+            val context = Context().apply { permissions.clear() }
+            FlipperBleService.startService(context)
+            assertEquals(1, context.dispatches)
+        } finally {
+            Build.VERSION.SDK_INT = 35
+        }
+    }
+    @Test fun usbAlreadyGrantedPromotesBoundOnlyService() = runBlocking {
+        val service = FlipperBleService().apply { permissions.clear() }
+        val device = UsbDevice(true)
+        service.usb.deviceList["flipper"] = device
+        assertTrue(service.ensureUsbForTest(device))
+        assertEquals(1, service.dispatches)
+    }
+    @Test fun newUsbGrantPromotesWithoutBluetoothConsent() = runBlocking {
+        val service = FlipperBleService().apply { permissions.clear() }
+        val device = UsbDevice(false)
+        service.usb.deviceList["flipper"] = device
+        service.usb.onRequest = {
+            it.granted = true
+            service.pendingUsbPermissionRequest!!.complete(true)
+        }
+        assertTrue(service.ensureUsbForTest(device))
+        assertEquals(1, service.dispatches)
+    }
+    @Test fun usbDenialDoesNotPromote() = runBlocking {
+        val service = FlipperBleService().apply { permissions.clear() }
+        val device = UsbDevice(false)
+        service.usb.deviceList["flipper"] = device
+        service.usb.onRequest = { service.pendingUsbPermissionRequest!!.complete(false) }
+        assertFalse(service.ensureUsbForTest(device))
+        assertEquals(0, service.dispatches)
+    }
+    @Test fun teardownDemotesBeforeDisconnectAndStopsScan() {
+        val service = FlipperBleService()
+        service.onStartCommand(Intent("start"), 0, 1)
+        service.onDestroy()
+        assertFalse(service.disconnectedWhileForeground)
+        assertEquals(1, service.scanStops)
+        assertEquals(1, service.disconnects)
+        assertFalse(service.serviceScope.isActive)
+    }
+    @Test fun revokedScanCleanupCannotPreventRemainingTeardown() {
+        val service = FlipperBleService().apply { scanStopFailure = SecurityException("revoked") }
+        service.onDestroy()
+        assertEquals(1, service.disconnects)
+        assertFalse(service.serviceScope.isActive)
+    }
+    @Test fun permittedStickyRestartRemainsSticky() {
+        val service = FlipperBleService()
+        assertEquals(Service.START_STICKY, service.onStartCommand(null, 0, 1))
+        assertEquals(1, service.promotions)
+        assertEquals(0, service.stops)
+    }
+    @Test fun revokedStickyRestartHandlesPlatformRejectionWithoutBecomingForeground() {
+        val service = FlipperBleService().apply { permissions.clear() }
+        assertEquals(Service.START_NOT_STICKY, service.onStartCommand(null, 0, 2))
+        assertEquals(1, service.promotions)
+        assertEquals(0, service.successfulPromotions)
+        assertFalse(service.foregroundActive)
+        assertEquals(1, service.stops)
+    }
+    @Test fun revocationAtActualPromotionDoesNotCrash() {
+        val service = FlipperBleService().apply { revokeDuringPromotion = true }
+        assertEquals(Service.START_NOT_STICKY, service.onStartCommand(Intent("start"), 0, 3))
+        assertEquals(1, service.promotions)
+        assertEquals(1, service.stops)
+    }
+    @Test fun explicitStopDoesNotPromote() {
+        val service = FlipperBleService()
+        assertEquals(Service.START_NOT_STICKY, service.onStartCommand(Intent("stop"), 0, 4))
+        assertEquals(0, service.promotions)
+        assertEquals(1, service.stops)
+    }
+    @Test fun permissionGrantCanRetrySameBoundInstance() {
+        val service = FlipperBleService().apply { permissions.clear() }
+        val manager = BleServiceManager(service)
+        service.connections.single().onServiceConnected(null, service.LocalBinder())
+        assertEquals(Service.START_NOT_STICKY, service.onStartCommand(null, 0, 5))
+        assertFalse(service.destroying)
+        assertEquals(0, service.successfulPromotions)
+        service.permissions.add("connect")
+        assertEquals(Service.START_STICKY, service.onStartCommand(Intent("start"), 0, 6))
+        assertEquals(2, service.promotions)
+        assertEquals(1, service.successfulPromotions)
+        assertTrue(service.foregroundActive)
+        manager.unbindService()
+    }
+    @Test fun deniedDeviceEntryDoesNotDispatchForegroundStart() {
+        val context = Context().apply { permissions.clear() }
+        assertFalse(FlipperBleService.startService(context))
+        assertEquals(0, context.dispatches)
+        assertFalse(context.fgRequired)
+        assertFalse(context.fgWaiting)
+        assertFalse(context.foregroundWatchdogScheduled)
+    }
+    @Test fun realUsbPermissionAllowsDispatchWithoutBluetooth() {
+        val context = Context().apply {
+            permissions.clear()
+            usb.deviceList["flipper"] = UsbDevice(true)
+        }
+        FlipperBleService.startService(context)
+        assertEquals(1, context.dispatches)
+    }
+    @Test fun attachmentAloneDoesNotQualifyForForegroundService() {
+        val context = Context().apply {
+            permissions.clear()
+            usb.deviceList["flipper"] = UsbDevice(false)
+        }
+        FlipperBleService.startService(context)
+        assertEquals(0, context.dispatches)
+    }
+    @Test fun foregroundQualificationDoesNotRequireLocationOrNotificationsOrBothBluetoothGrants() {
+        for (permission in listOf("connect", "scan")) {
+            val context = Context().apply { permissions.clear(); permissions.add(permission) }
+            FlipperBleService.startService(context)
+            assertEquals(1, context.dispatches)
+        }
+    }
+    @Test fun dispatchPermissionRaceIsContained() {
+        val context = Context().apply { dispatchFailure = SecurityException("revoked") }
+        FlipperBleService.startService(context)
+        assertEquals(1, context.dispatches)
+    }
+    @Test fun deniedServiceCreationDoesNotAccessScanner() {
+        val service = FlipperBleService().apply { permissions.clear(); bluetooth.adapter.failScanner = true }
+        service.initializeForTest()
+        assertEquals(0, service.bluetooth.adapter.scannerReads)
+    }
+    @Test fun scannerPermissionRaceIsContainedAndGrantCanRetry() {
+        val service = FlipperBleService().apply { bluetooth.adapter.failScanner = true }
+        service.initializeForTest()
+        assertNull(service.bleScanner)
+        service.bluetooth.adapter.failScanner = false
+        service.initializeForTest()
+        assertNotNull(service.bleScanner)
+    }
+}
+
+class ExtractedServiceBindingTest {
+    @Test fun deniedDeviceEntryStillBindsForUsbPermissionRequest() {
+        val context = Context().apply { permissions.clear() }
+        val manager = BleServiceManager(context)
+        assertEquals(0, context.dispatches)
+        assertEquals(1, context.binds)
+        manager.unbindService()
+    }
+    @Test fun failedBindCanRetry() {
+        val context = Context().apply { bindResult = false }
+        val manager = BleServiceManager(context)
+        context.bindResult = true
+        manager.bindService()
+        assertEquals(2, context.binds)
+        assertEquals(1, context.unbinds)
+        manager.unbindService()
+    }
+    @Test fun unbindBeforeConnectionReleasesPendingBinding() {
+        val context = Context()
+        val manager = BleServiceManager(context)
+        manager.unbindService()
+        assertEquals(1, context.unbinds)
+        manager.bindService()
+        assertEquals(2, context.binds)
+        manager.unbindService()
+    }
+    @Test fun duplicateBindDoesNotRegisterTwice() {
+        val context = Context()
+        val manager = BleServiceManager(context)
+        manager.bindService()
+        assertEquals(1, context.binds)
+        manager.unbindService()
+    }
+    @Test fun temporaryDisconnectRetainsRegistrationForAndroidReconnect() {
+        val context = Context()
+        val manager = BleServiceManager(context)
+        val connection = context.connections.single()
+        connection.onServiceDisconnected(null)
+        manager.bindService()
+        assertEquals(1, context.binds)
+        assertEquals(0, context.unbinds)
+        connection.onServiceConnected(null, FlipperBleService().LocalBinder())
+        assertTrue(manager.isServiceBound.value)
+        manager.unbindService()
+    }
+    @Test fun nullBindingIsNotReportedBoundAndCanRetry() {
+        val context = Context()
+        val manager = BleServiceManager(context)
+        context.connections.single().onNullBinding(null)
+        assertFalse(manager.isServiceBound.value)
+        assertNull(manager.getService())
+        manager.bindService()
+        assertEquals(2, context.binds)
+        assertEquals(1, context.unbinds)
+        manager.unbindService()
+    }
+    @Test fun invalidBinderIsNotReportedBound() {
+        val context = Context()
+        val manager = BleServiceManager(context)
+        context.connections.single().onServiceConnected(null, null)
+        assertFalse(manager.isServiceBound.value)
+        assertNull(manager.getService())
+        manager.unbindService()
+    }
+    @Test fun bindingDeathReleasesRegistrationAndCanRetry() {
+        val context = Context()
+        val manager = BleServiceManager(context)
+        context.connections.single().onBindingDied(null)
+        manager.bindService()
+        assertEquals(2, context.binds)
+        assertEquals(1, context.unbinds)
+        manager.unbindService()
+    }
+    @Test fun lateCallbackFromReleasedBindingCannotResurrectService() {
+        val context = Context()
+        val manager = BleServiceManager(context)
+        val old = context.connections.single()
+        manager.unbindService()
+        manager.bindService()
+        old.onServiceConnected(null, FlipperBleService().LocalBinder())
+        assertFalse(manager.isServiceBound.value)
+        assertNull(manager.getService())
+        manager.unbindService()
+    }
+    @Test fun grantRetryPromotesWithoutUnbindingExistingTransport() {
+        val context = Context().apply { permissions.clear() }
+        val manager = BleServiceManager(context)
+        val service = FlipperBleService()
+        context.connections.single().onServiceConnected(null, service.LocalBinder())
+        context.permissions.add("connect")
+        manager.bindService()
+        assertEquals(1, context.dispatches)
+        assertEquals(1, context.binds)
+        assertEquals(0, context.unbinds)
+        assertSame(service, manager.getService())
+        manager.unbindService()
+    }
+    @Test fun bindSecurityExceptionDoesNotPoisonRetry() {
+        val context = Context().apply { bindFailure = SecurityException("bind denied") }
+        val manager = BleServiceManager(context)
+        context.bindFailure = null
+        manager.bindService()
+        assertEquals(2, context.binds)
+        manager.unbindService()
+    }
+}

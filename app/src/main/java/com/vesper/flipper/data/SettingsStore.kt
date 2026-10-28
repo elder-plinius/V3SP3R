@@ -13,34 +13,89 @@ import javax.inject.Singleton
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "vesper_settings")
 
 @Singleton
-class SettingsStore @Inject constructor(
-    @ApplicationContext private val context: Context
-) {
+class SettingsStore internal constructor(private val dataStore: DataStore<Preferences>) {
+    @Inject constructor(@ApplicationContext context: Context) : this(context.dataStore)
 
-    // OpenRouter API Key
-    private val API_KEY = stringPreferencesKey("openrouter_api_key")
+    private val PROVIDER = stringPreferencesKey("ai_provider")
+    // Keep the legacy OpenRouter keys as the canonical slots: no destructive migration.
+    private fun keySlot(provider: AiProvider) = stringPreferencesKey(
+        if (provider == AiProvider.OPENROUTER) "openrouter_api_key" else "${provider.name.lowercase()}_api_key"
+    )
+    private fun modelSlot(provider: AiProvider) = stringPreferencesKey(
+        if (provider == AiProvider.OPENROUTER) "selected_model" else "${provider.name.lowercase()}_model"
+    )
+    private fun providerOf(preferences: Preferences): AiProvider =
+        AiProvider.entries.find { it.name.lowercase() == preferences[PROVIDER] } ?: AiProvider.OPENROUTER
 
-    val apiKey: Flow<String?> = context.dataStore.data.map { preferences ->
-        preferences[API_KEY]
+    private fun snapshot(preferences: Preferences): AiConnectionConfig {
+        val provider = providerOf(preferences)
+        return AiConnectionConfig(provider, preferences[keySlot(provider)], preferences[modelSlot(provider)]
+            ?: if (provider == AiProvider.OPENROUTER) DEFAULT_MODEL else "")
+    }
+
+    val aiConnectionConfig: Flow<AiConnectionConfig> = dataStore.data.map(::snapshot)
+    val selectedProvider: Flow<AiProvider> = aiConnectionConfig.map { it.provider }
+    val apiKey: Flow<String?> = aiConnectionConfig.map { it.apiKey }
+    val selectedModel: Flow<String> = aiConnectionConfig.map { it.model }
+    val openRouterApiKey: Flow<String?> = dataStore.data.map { it[keySlot(AiProvider.OPENROUTER)] }
+
+    // User-authored context shared across providers; never stored in a credential slot.
+    private val DEVICE_ASSIST_NOTES = stringPreferencesKey("device_assist_notes")
+    val deviceAssistNotes: Flow<String> = dataStore.data.map { it[DEVICE_ASSIST_NOTES] ?: "" }
+
+    suspend fun setDeviceAssistNotes(notes: String) {
+        require(notes.toByteArray(Charsets.UTF_8).size <= MAX_DEVICE_ASSIST_NOTES_BYTES) {
+            "Flipper Assist Notes must be at most $MAX_DEVICE_ASSIST_NOTES_BYTES UTF-8 bytes."
+        }
+        dataStore.edit { preferences ->
+            if (notes.isEmpty()) preferences.remove(DEVICE_ASSIST_NOTES)
+            else preferences[DEVICE_ASSIST_NOTES] = notes
+        }
+    }
+
+    /** Reject a stale Settings draft rather than overwriting a newer writer. */
+    suspend fun saveDeviceAssistNotesIfUnchanged(notes: String, expected: String): Boolean {
+        require(notes.toByteArray(Charsets.UTF_8).size <= MAX_DEVICE_ASSIST_NOTES_BYTES) {
+            "Flipper Assist Notes must be at most $MAX_DEVICE_ASSIST_NOTES_BYTES UTF-8 bytes."
+        }
+        var saved = false
+        dataStore.edit { preferences ->
+            if ((preferences[DEVICE_ASSIST_NOTES] ?: "") == expected) {
+                if (notes.isEmpty()) preferences.remove(DEVICE_ASSIST_NOTES)
+                else preferences[DEVICE_ASSIST_NOTES] = notes
+                saved = true
+            }
+        }
+        return saved
+    }
+
+    suspend fun setProvider(provider: AiProvider) {
+        dataStore.edit { it[PROVIDER] = provider.name.lowercase() }
+    }
+
+    suspend fun saveProviderConfig(config: AiConnectionConfig) {
+        dataStore.edit {
+            if (config.apiKey == null) it.remove(keySlot(config.provider)) else it[keySlot(config.provider)] = config.apiKey
+            it[modelSlot(config.provider)] = config.model
+        }
+    }
+
+    suspend fun setApiKey(key: String?, provider: AiProvider) {
+        dataStore.edit {
+            if (key == null) it.remove(keySlot(provider)) else it[keySlot(provider)] = key
+        }
     }
 
     suspend fun setApiKey(key: String) {
-        context.dataStore.edit { preferences ->
-            preferences[API_KEY] = key
-        }
+        dataStore.edit { it[keySlot(providerOf(it))] = key }
     }
 
-    // Selected Model
-    private val SELECTED_MODEL = stringPreferencesKey("selected_model")
-
-    val selectedModel: Flow<String> = context.dataStore.data.map { preferences ->
-        preferences[SELECTED_MODEL] ?: DEFAULT_MODEL
+    suspend fun setSelectedModel(model: String, provider: AiProvider) {
+        dataStore.edit { it[modelSlot(provider)] = model }
     }
 
     suspend fun setSelectedModel(model: String) {
-        context.dataStore.edit { preferences ->
-            preferences[SELECTED_MODEL] = model
-        }
+        dataStore.edit { it[modelSlot(providerOf(it))] = model }
     }
 
     // Last Connected Device
@@ -48,27 +103,27 @@ class SettingsStore @Inject constructor(
     private val LAST_DEVICE_NAME = stringPreferencesKey("last_device_name")
     private val LAST_CHAT_SESSION_ID = stringPreferencesKey("last_chat_session_id")
 
-    val lastDeviceAddress: Flow<String?> = context.dataStore.data.map { preferences ->
+    val lastDeviceAddress: Flow<String?> = dataStore.data.map { preferences ->
         preferences[LAST_DEVICE_ADDRESS]
     }
 
-    val lastDeviceName: Flow<String?> = context.dataStore.data.map { preferences ->
+    val lastDeviceName: Flow<String?> = dataStore.data.map { preferences ->
         preferences[LAST_DEVICE_NAME]
     }
 
     suspend fun setLastDevice(address: String, name: String) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[LAST_DEVICE_ADDRESS] = address
             preferences[LAST_DEVICE_NAME] = name
         }
     }
 
-    val lastChatSessionId: Flow<String?> = context.dataStore.data.map { preferences ->
+    val lastChatSessionId: Flow<String?> = dataStore.data.map { preferences ->
         preferences[LAST_CHAT_SESSION_ID]
     }
 
     suspend fun setLastChatSessionId(sessionId: String?) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             if (sessionId.isNullOrBlank()) {
                 preferences.remove(LAST_CHAT_SESSION_ID)
             } else {
@@ -80,12 +135,12 @@ class SettingsStore @Inject constructor(
     // Auto-connect setting
     private val AUTO_CONNECT = booleanPreferencesKey("auto_connect")
 
-    val autoConnect: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val autoConnect: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[AUTO_CONNECT] ?: true
     }
 
     suspend fun setAutoConnect(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[AUTO_CONNECT] = enabled
         }
     }
@@ -93,12 +148,12 @@ class SettingsStore @Inject constructor(
     // Default project path on Flipper
     private val DEFAULT_PROJECT_PATH = stringPreferencesKey("default_project_path")
 
-    val defaultProjectPath: Flow<String> = context.dataStore.data.map { preferences ->
+    val defaultProjectPath: Flow<String> = dataStore.data.map { preferences ->
         preferences[DEFAULT_PROJECT_PATH] ?: "/ext/apps_data/vesper"
     }
 
     suspend fun setDefaultProjectPath(path: String) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[DEFAULT_PROJECT_PATH] = path
         }
     }
@@ -106,12 +161,12 @@ class SettingsStore @Inject constructor(
     // Permission auto-grant duration (milliseconds)
     private val PERMISSION_DURATION = longPreferencesKey("permission_duration")
 
-    val permissionDuration: Flow<Long> = context.dataStore.data.map { preferences ->
+    val permissionDuration: Flow<Long> = dataStore.data.map { preferences ->
         preferences[PERMISSION_DURATION] ?: 15 * 60 * 1000L // 15 minutes default
     }
 
     suspend fun setPermissionDuration(durationMs: Long) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[PERMISSION_DURATION] = durationMs
         }
     }
@@ -120,22 +175,22 @@ class SettingsStore @Inject constructor(
     private val AUTO_APPROVE_MEDIUM = booleanPreferencesKey("auto_approve_medium")
     private val AUTO_APPROVE_HIGH = booleanPreferencesKey("auto_approve_high")
 
-    val autoApproveMedium: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val autoApproveMedium: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[AUTO_APPROVE_MEDIUM] ?: false
     }
 
     suspend fun setAutoApproveMedium(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[AUTO_APPROVE_MEDIUM] = enabled
         }
     }
 
-    val autoApproveHigh: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val autoApproveHigh: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[AUTO_APPROVE_HIGH] ?: false
     }
 
     suspend fun setAutoApproveHigh(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[AUTO_APPROVE_HIGH] = enabled
         }
     }
@@ -143,12 +198,12 @@ class SettingsStore @Inject constructor(
     // Haptic feedback
     private val HAPTIC_FEEDBACK = booleanPreferencesKey("haptic_feedback")
 
-    val hapticFeedback: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val hapticFeedback: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[HAPTIC_FEEDBACK] ?: true
     }
 
     suspend fun setHapticFeedback(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[HAPTIC_FEEDBACK] = enabled
         }
     }
@@ -156,12 +211,12 @@ class SettingsStore @Inject constructor(
     // Dark mode
     private val DARK_MODE = booleanPreferencesKey("dark_mode")
 
-    val darkMode: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val darkMode: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[DARK_MODE] ?: true
     }
 
     suspend fun setDarkMode(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[DARK_MODE] = enabled
         }
     }
@@ -169,12 +224,12 @@ class SettingsStore @Inject constructor(
     // Audit log retention (days)
     private val AUDIT_RETENTION_DAYS = intPreferencesKey("audit_retention_days")
 
-    val auditRetentionDays: Flow<Int> = context.dataStore.data.map { preferences ->
+    val auditRetentionDays: Flow<Int> = dataStore.data.map { preferences ->
         preferences[AUDIT_RETENTION_DAYS] ?: 30
     }
 
     suspend fun setAuditRetentionDays(days: Int) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[AUDIT_RETENTION_DAYS] = days
         }
     }
@@ -182,13 +237,13 @@ class SettingsStore @Inject constructor(
     // AI agent max model/tool loop iterations
     private val AI_MAX_ITERATIONS = intPreferencesKey("ai_max_iterations")
 
-    val aiMaxIterations: Flow<Int> = context.dataStore.data.map { preferences ->
+    val aiMaxIterations: Flow<Int> = dataStore.data.map { preferences ->
         (preferences[AI_MAX_ITERATIONS] ?: DEFAULT_AI_MAX_ITERATIONS)
             .coerceIn(MIN_AI_MAX_ITERATIONS, MAX_AI_MAX_ITERATIONS)
     }
 
     suspend fun setAiMaxIterations(value: Int) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[AI_MAX_ITERATIONS] = value.coerceIn(MIN_AI_MAX_ITERATIONS, MAX_AI_MAX_ITERATIONS)
         }
     }
@@ -198,32 +253,32 @@ class SettingsStore @Inject constructor(
     private val TTS_VOICE_ID = stringPreferencesKey("tts_voice_id")
     private val TTS_AUTO_SPEAK = booleanPreferencesKey("tts_auto_speak")
 
-    val ttsEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val ttsEnabled: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[TTS_ENABLED] ?: false
     }
 
     suspend fun setTtsEnabled(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[TTS_ENABLED] = enabled
         }
     }
 
-    val ttsVoiceId: Flow<String> = context.dataStore.data.map { preferences ->
+    val ttsVoiceId: Flow<String> = dataStore.data.map { preferences ->
         preferences[TTS_VOICE_ID] ?: DEFAULT_TTS_VOICE
     }
 
     suspend fun setTtsVoiceId(voiceId: String) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[TTS_VOICE_ID] = voiceId
         }
     }
 
-    val ttsAutoSpeak: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val ttsAutoSpeak: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[TTS_AUTO_SPEAK] ?: false
     }
 
     suspend fun setTtsAutoSpeak(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[TTS_AUTO_SPEAK] = enabled
         }
     }
@@ -236,22 +291,22 @@ class SettingsStore @Inject constructor(
     private val GLASSES_SAILOR_MOUTH = booleanPreferencesKey("glasses_sailor_mouth")
     private val GLASSES_MUTED = booleanPreferencesKey("glasses_muted")
 
-    val glassesEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val glassesEnabled: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[GLASSES_ENABLED] ?: false
     }
 
     suspend fun setGlassesEnabled(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[GLASSES_ENABLED] = enabled
         }
     }
 
-    val glassesBridgeUrl: Flow<String?> = context.dataStore.data.map { preferences ->
+    val glassesBridgeUrl: Flow<String?> = dataStore.data.map { preferences ->
         preferences[GLASSES_BRIDGE_URL]
     }
 
     suspend fun setGlassesBridgeUrl(url: String?) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             if (url.isNullOrBlank()) {
                 preferences.remove(GLASSES_BRIDGE_URL)
             } else {
@@ -260,42 +315,42 @@ class SettingsStore @Inject constructor(
         }
     }
 
-    val glassesAutoSend: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val glassesAutoSend: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[GLASSES_AUTO_SEND] ?: true
     }
 
     suspend fun setGlassesAutoSend(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[GLASSES_AUTO_SEND] = enabled
         }
     }
 
-    val glassesAutoConnect: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val glassesAutoConnect: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[GLASSES_AUTO_CONNECT] ?: false
     }
 
     suspend fun setGlassesAutoConnect(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[GLASSES_AUTO_CONNECT] = enabled
         }
     }
 
-    val glassesSailorMouth: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val glassesSailorMouth: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[GLASSES_SAILOR_MOUTH] ?: false
     }
 
     suspend fun setGlassesSailorMouth(enabled: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[GLASSES_SAILOR_MOUTH] = enabled
         }
     }
 
-    val glassesMuted: Flow<Boolean> = context.dataStore.data.map { preferences ->
+    val glassesMuted: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[GLASSES_MUTED] ?: false
     }
 
     suspend fun setGlassesMuted(muted: Boolean) {
-        context.dataStore.edit { preferences ->
+        dataStore.edit { preferences ->
             preferences[GLASSES_MUTED] = muted
         }
     }
@@ -305,6 +360,7 @@ class SettingsStore @Inject constructor(
         const val DEFAULT_MODEL = "nousresearch/hermes-4-405b"
         // Shimmer: soft, warm female — default TTS voice (OpenAI via OpenRouter)
         const val DEFAULT_TTS_VOICE = "shimmer"
+        const val MAX_DEVICE_ASSIST_NOTES_BYTES = 4096
         const val DEFAULT_AI_MAX_ITERATIONS = 10
         const val MIN_AI_MAX_ITERATIONS = 4
         const val MAX_AI_MAX_ITERATIONS = 20

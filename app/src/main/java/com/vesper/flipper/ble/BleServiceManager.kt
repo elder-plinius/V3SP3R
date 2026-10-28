@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,8 +33,11 @@ import javax.inject.Singleton
 class BleServiceManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    @Volatile
     private var _service: FlipperBleService? = null
-    private var isBinding = false
+    // A registration exists before onServiceConnected, and survives a temporary
+    // onServiceDisconnected. Keep it separate from the usable service instance.
+    private var serviceConnection: ServiceConnection? = null
 
     private val _isServiceBound = MutableStateFlow(false)
     val isServiceBound: StateFlow<Boolean> = _isServiceBound.asStateFlow()
@@ -55,24 +59,39 @@ class BleServiceManager @Inject constructor(
     private var connectedDeviceJob: Job? = null
     private var cliCapabilityJob: Job? = null
 
-    private val serviceConnection = object : ServiceConnection {
+    private fun newServiceConnection() = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            val localBinder = binder as? FlipperBleService.LocalBinder
-            _service = localBinder?.getService()
-            _isServiceBound.value = true
-            isBinding = false
-            observeServiceState()
+            synchronized(this@BleServiceManager) {
+                if (serviceConnection !== this) return
+                val service = (binder as? FlipperBleService.LocalBinder)?.getService()
+                if (service == null) {
+                    releaseBinding(this)
+                    return
+                }
+                _service = service
+                _isServiceBound.value = true
+                observeServiceState()
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            cancelServiceCollectors()
-            _service = null
-            _isServiceBound.value = false
-            isBinding = false
-            _connectionState.value = ConnectionState.Disconnected
-            _discoveredDevices.value = emptyList()
-            _connectedDevice.value = null
-            _cliCapabilityStatus.value = CliCapabilityStatus()
+            synchronized(this@BleServiceManager) {
+                if (serviceConnection !== this) return
+                // Android retains this registration and reconnects it.
+                clearServiceState()
+            }
+        }
+
+        override fun onNullBinding(name: ComponentName?) {
+            synchronized(this@BleServiceManager) {
+                if (serviceConnection === this) releaseBinding(this)
+            }
+        }
+
+        override fun onBindingDied(name: ComponentName?) {
+            synchronized(this@BleServiceManager) {
+                if (serviceConnection === this) releaseBinding(this)
+            }
         }
     }
 
@@ -80,29 +99,51 @@ class BleServiceManager @Inject constructor(
         bindService()
     }
 
-    /**
-     * Start and bind to the BLE service
-     */
+    /** Bind for USB permission requests even when foreground start is ineligible. */
+    @Synchronized
     fun bindService() {
-        if (_isServiceBound.value || isBinding) return
-        isBinding = true
+        // Retry promotion after a permission grant even if we are already bound.
+        // A declined foreground start must not discard an existing transport.
         FlipperBleService.startService(context)
-        Intent(context, FlipperBleService::class.java).also { intent ->
-            context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        if (serviceConnection != null) return
+        val connection = newServiceConnection()
+        serviceConnection = connection
+        try {
+            val intent = Intent(context, FlipperBleService::class.java)
+            if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
+                releaseBinding(connection)
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "BLE service binding denied", e)
+            releaseBinding(connection)
         }
     }
 
-    /**
-     * Unbind from the service
-     */
+    @Synchronized
     fun unbindService() {
-        if (_isServiceBound.value) {
-            cancelServiceCollectors()
-            context.unbindService(serviceConnection)
-            _isServiceBound.value = false
+        serviceConnection?.let { releaseBinding(it) }
+    }
+
+    private fun releaseBinding(connection: ServiceConnection) {
+        // Invalidate before unbinding so late callbacks cannot resurrect it or
+        // overwrite a subsequent registration. Also release pending/failed binds.
+        serviceConnection = null
+        try {
+            context.unbindService(connection)
+        } catch (_: IllegalArgumentException) {
+            // bindService may have failed before Android registered the connection.
         }
+        clearServiceState()
+    }
+
+    private fun clearServiceState() {
+        cancelServiceCollectors()
         _service = null
-        isBinding = false
+        _isServiceBound.value = false
+        _connectionState.value = ConnectionState.Disconnected
+        _discoveredDevices.value = emptyList()
+        _connectedDevice.value = null
+        _cliCapabilityStatus.value = CliCapabilityStatus()
     }
 
     /**
@@ -241,6 +282,7 @@ class BleServiceManager @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "BleServiceManager"
         private const val DEFAULT_BIND_TIMEOUT_MS = 4_000L
         private const val DEFAULT_CONNECT_TIMEOUT_MS = 8_000L
     }

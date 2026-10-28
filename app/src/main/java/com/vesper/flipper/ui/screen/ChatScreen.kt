@@ -31,11 +31,16 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -55,6 +60,9 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -113,7 +121,7 @@ fun ChatScreen(
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
-        val uri = cameraImageUriString?.let { Uri.parse(it) }
+        val uri = cameraImageUriString?.toUri()
         if (success && uri != null) {
             viewModel.addImage(uri)
         } else if (uri != null) {
@@ -129,7 +137,7 @@ fun ChatScreen(
     val videoLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CaptureVideo()
     ) { success ->
-        val uri = cameraImageUriString?.let { Uri.parse(it) }
+        val uri = cameraImageUriString?.toUri()
         if (success && uri != null) {
             viewModel.addImage(uri)
         }
@@ -372,6 +380,7 @@ fun ChatScreen(
                             ttsState = ttsState,
                             onSpeak = { viewModel.speakText(it) },
                             onStopSpeaking = { viewModel.stopSpeaking() },
+                            pendingApprovalId = conversationState.pendingApproval?.id,
                             showRetry = isLastMessage && !conversationState.isLoading &&
                                     conversationState.error != null,
                             onRetry = { viewModel.retryLastMessage() }
@@ -498,6 +507,7 @@ private fun ChatMessageItem(
     ttsState: TtsState = TtsState.Idle,
     onSpeak: ((String) -> Unit)? = null,
     onStopSpeaking: (() -> Unit)? = null,
+    pendingApprovalId: String? = null,
     showRetry: Boolean = false,
     onRetry: (() -> Unit)? = null
 ) {
@@ -555,73 +565,71 @@ private fun ChatMessageItem(
         Column(
             modifier = Modifier.widthIn(max = 300.dp)
         ) {
-            Surface(
-                shape = RoundedCornerShape(
-                    topStart = if (isUser) 16.dp else 4.dp,
-                    topEnd = if (isUser) 4.dp else 16.dp,
-                    bottomStart = 16.dp,
-                    bottomEnd = 16.dp
-                ),
-                color = when {
-                    isUser -> VesperOrange
-                    isTool -> MaterialTheme.colorScheme.secondaryContainer
-                    else -> MaterialTheme.colorScheme.surfaceVariant
-                }
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp)
+            // Keep actual model prose separate from the optional execution trace.
+            // Tool-only messages should not create an empty chat bubble.
+            if (message.content.isNotEmpty() || !message.imageAttachments.isNullOrEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(
+                        topStart = if (isUser) 16.dp else 4.dp,
+                        topEnd = if (isUser) 4.dp else 16.dp,
+                        bottomStart = 16.dp,
+                        bottomEnd = 16.dp
+                    ),
+                    color = if (isUser) VesperOrange else MaterialTheme.colorScheme.surfaceVariant
                 ) {
-                    // Show image attachments if present
-                    if (!message.imageAttachments.isNullOrEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            message.imageAttachments.forEach { attachment ->
-                                val attachData: Any = attachment.localUri
-                                    ?: android.util.Base64.decode(attachment.base64Data, android.util.Base64.NO_WRAP)
-                                AsyncImage(
-                                    model = ImageRequest.Builder(context)
-                                        .data(attachData)
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = "Attached image",
-                                    modifier = Modifier
-                                        .size(80.dp)
-                                        .clip(RoundedCornerShape(8.dp)),
-                                    contentScale = ContentScale.Crop
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        if (!message.imageAttachments.isNullOrEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                message.imageAttachments.forEach { attachment ->
+                                    val attachData: Any = attachment.localUri
+                                        ?: android.util.Base64.decode(attachment.base64Data, android.util.Base64.NO_WRAP)
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(context)
+                                            .data(attachData)
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = "Attached image",
+                                        modifier = Modifier
+                                            .size(80.dp)
+                                            .clip(RoundedCornerShape(8.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                }
+                            }
+                            if (message.content.isNotEmpty()) Spacer(modifier = Modifier.height(8.dp))
+                        }
+                        if (message.content.isNotEmpty()) {
+                            if (isAssistant) {
+                                AssistantMessageBody(message.content)
+                            } else {
+                                Text(
+                                    text = message.content,
+                                    color = if (isUser) Color.White else MaterialTheme.colorScheme.onSurface,
+                                    style = MaterialTheme.typography.bodyMedium
                                 )
                             }
                         }
-                        if (message.content.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                        }
-                    }
-
-                    if (message.content.isNotEmpty()) {
-                        Text(
-                            text = message.content,
-                            color = if (isUser) Color.White else MaterialTheme.colorScheme.onSurface,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-
-                    // Show tool calls
-                    message.toolCalls?.forEach { toolCall ->
-                        Spacer(modifier = Modifier.height(8.dp))
-                        ToolCallDisplay(toolCall)
-                    }
-
-                    // Show tool results with execution details
-                    message.toolResults?.forEach { toolResult ->
-                        if (message.content.isNotEmpty() || !message.toolCalls.isNullOrEmpty()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                        }
-                        ToolResultDisplay(toolResult)
                     }
                 }
+            }
+
+            message.toolCalls?.forEach { toolCall ->
+                Spacer(modifier = Modifier.height(4.dp))
+                ToolCallDisplay(
+                    toolCall,
+                    awaitingApproval = message.status == MessageStatus.AWAITING_APPROVAL ||
+                        (message.metadata?.pendingApprovalId != null &&
+                            message.metadata.pendingApprovalId == pendingApprovalId)
+                )
+            }
+            message.toolResults?.forEach { toolResult ->
+                Spacer(modifier = Modifier.height(4.dp))
+                ToolResultDisplay(toolResult)
             }
 
             // Status indicator
@@ -743,33 +751,58 @@ private fun ChatMessageItem(
 }
 
 @Composable
-private fun ToolCallDisplay(toolCall: ToolCall) {
+private fun ToolCallDisplay(toolCall: ToolCall, awaitingApproval: Boolean = false) {
+    var expanded by rememberSaveable(toolCall.id) { mutableStateOf(false) }
     Surface(
+        onClick = { expanded = !expanded },
+        modifier = Modifier.semantics {
+            stateDescription = if (expanded) "Details expanded" else "Details collapsed"
+        },
         shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
     ) {
-        Column(
-            modifier = Modifier.padding(8.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     Icons.Default.Terminal,
                     contentDescription = null,
                     modifier = Modifier.size(14.dp),
                     tint = VesperGold
                 )
-                Spacer(modifier = Modifier.width(4.dp))
+                Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    "execute_command",
+                    text = (if (awaitingApproval) "Awaiting approval" else "Requested") +
+                        " · ${toolCallSummary(toolCall)}",
                     style = MaterialTheme.typography.labelMedium,
+                    color = if (awaitingApproval) RiskMedium else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Hide raw arguments" else "Show raw arguments",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            if (expanded) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = toolCall.arguments,
+                    style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
-                    color = VesperGold
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
     }
+}
+
+private fun toolCallSummary(toolCall: ToolCall): String {
+    val action = runCatching {
+        toolResultJson.parseToJsonElement(toolCall.arguments).jsonObject["action"]
+            ?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+    }.getOrNull()
+    val name = toolCall.name.take(32)
+    return if (action == null) name else "${action.take(64)} ($name)"
 }
 
 @Composable
@@ -825,11 +858,16 @@ private val toolResultJson = Json { ignoreUnknownKeys = true }
 
 @Composable
 private fun ToolResultDisplay(toolResult: ToolResult) {
+    var expanded by rememberSaveable(toolResult.toolCallId) { mutableStateOf(false) }
     val parsed = remember(toolResult.content, toolResult.success) {
         parseToolResult(toolResult)
     }
 
     Surface(
+        onClick = { expanded = !expanded },
+        modifier = Modifier.semantics {
+            stateDescription = if (expanded) "Details expanded" else "Details collapsed"
+        },
         shape = RoundedCornerShape(8.dp),
         color = if (parsed.success) {
             VesperGold.copy(alpha = 0.12f)
@@ -837,7 +875,7 @@ private fun ToolResultDisplay(toolResult: ToolResult) {
             RiskHigh.copy(alpha = 0.14f)
         }
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = if (parsed.success) Icons.Default.CheckCircle else Icons.Default.Error,
@@ -849,18 +887,182 @@ private fun ToolResultDisplay(toolResult: ToolResult) {
                 Text(
                     text = parsed.title,
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (parsed.success) VesperGold else RiskHigh
+                    color = if (parsed.success) VesperGold else RiskHigh,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Hide raw result" else "Show raw result",
+                    modifier = Modifier.size(18.dp)
                 )
             }
-
             if (parsed.detail.isNotBlank()) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = parsed.detail,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3
+                    maxLines = if (parsed.success) 2 else Int.MAX_VALUE
                 )
+            }
+            if (expanded) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = toolResult.content,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+private data class AssistantBlock(val kind: String, val text: String)
+
+/** Indentation only; preserves every JSON token and duplicate object key. */
+private fun prettyJsonForDisplay(source: String): String? {
+    val result = StringBuilder(source.length + 256)
+    var depth = 0
+    var insideString = false
+    var escaped = false
+    var lastToken = ' '
+    fun newline() {
+        result.append('\n')
+        repeat(minOf(depth, 24)) { result.append("  ") }
+    }
+    for (char in source) {
+        if (insideString) {
+            result.append(char)
+            when {
+                escaped -> escaped = false
+                char == '\\' -> escaped = true
+                char == '"' -> { insideString = false; lastToken = '"' }
+            }
+            continue
+        }
+        when (char) {
+            '"' -> { insideString = true; result.append(char) }
+            '{', '[' -> { result.append(char); depth++; if (depth > 64) return null; newline(); lastToken = char }
+            '}', ']' -> {
+                depth--
+                if (depth < 0) return null
+                if (lastToken != '{' && lastToken != '[') newline()
+                result.append(char)
+                lastToken = char
+            }
+            ',' -> { result.append(char); newline(); lastToken = char }
+            ':' -> { result.append(": "); lastToken = char }
+            else -> if (!char.isWhitespace()) { result.append(char); lastToken = char }
+        }
+        if (result.length > 96_000) return null
+    }
+    return if (!insideString && depth == 0) result.toString() else null
+}
+
+/** Presentation only: original message text stays unchanged for copy, TTS and persistence. */
+private fun assistantBlocks(text: String): List<AssistantBlock> {
+    if (text.length > 32_000) return listOf(AssistantBlock("paragraph", text))
+    val trimmedContent = text.trim()
+    if (trimmedContent.startsWith("{") || trimmedContent.startsWith("[")) {
+        // Lexical formatting preserves duplicate keys; decoding into a JSON tree would lose them.
+        val pretty = prettyJsonForDisplay(trimmedContent)
+        if (pretty != null && runCatching { Json.parseToJsonElement(trimmedContent) }.isSuccess) {
+            return listOf(AssistantBlock("code", pretty))
+        }
+    }
+    val lines = text.lines()
+    if (lines.size > 240) return listOf(AssistantBlock("paragraph", text))
+    val blocks = mutableListOf<AssistantBlock>()
+    val prose = mutableListOf<String>()
+    val code = mutableListOf<String>()
+    var insideCode = false
+    fun flushProse() {
+        if (prose.isNotEmpty()) {
+            blocks.add(AssistantBlock("paragraph", prose.joinToString("\n")))
+            prose.clear()
+        }
+    }
+    fun flushCode() {
+        blocks.add(AssistantBlock("code", code.joinToString("\n")))
+        code.clear()
+    }
+    for (line in lines) {
+        val trimmed = line.trimStart()
+        if (trimmed.startsWith("```")) {
+            flushProse()
+            if (insideCode) flushCode()
+            insideCode = !insideCode
+            continue
+        }
+        if (insideCode) {
+            code.add(line)
+            continue
+        }
+        if (line.isBlank()) {
+            flushProse()
+            if (blocks.lastOrNull()?.kind != "space") blocks.add(AssistantBlock("space", ""))
+            continue
+        }
+        when {
+            Regex("^#{1,4}\\s+").containsMatchIn(trimmed) -> {
+                flushProse()
+                blocks.add(AssistantBlock("heading", trimmed.replaceFirst(Regex("^#{1,4}\\s+"), "")))
+            }
+            listOf("Status:", "Observed:", "Not verified:", "Next:").any { trimmed.startsWith(it, ignoreCase = true) } -> {
+                flushProse()
+                blocks.add(AssistantBlock("label", trimmed))
+            }
+            trimmed.startsWith("- ") || trimmed.startsWith("* ") -> {
+                flushProse()
+                blocks.add(AssistantBlock("bullet", trimmed.drop(2)))
+            }
+            trimmed.length <= 160 && !trimmed.startsWith("http://") &&
+                !trimmed.startsWith("https://") &&
+                Regex("^[A-Za-z][A-Za-z0-9_ -]{1,30}\\s*:\\s*\\S+.*$").matches(trimmed) -> {
+                flushProse()
+                blocks.add(AssistantBlock("fact", trimmed))
+            }
+            else -> prose.add(line)
+        }
+    }
+    flushProse()
+    if (insideCode) flushCode()
+    return blocks.ifEmpty { listOf(AssistantBlock("paragraph", text)) }
+}
+
+@Composable
+private fun AssistantMessageBody(content: String) {
+    val blocks = remember(content) { assistantBlocks(content) }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        blocks.forEach { block ->
+            when (block.kind) {
+                "space" -> Spacer(modifier = Modifier.height(4.dp))
+                "heading" -> Text(block.text, style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                "label" -> Text(block.text, style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                "bullet" -> Text("• ${block.text}", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface)
+                "fact" -> Text(
+                    text = buildAnnotatedString {
+                        pushStyle(SpanStyle(fontWeight = FontWeight.SemiBold))
+                        append(block.text.substringBefore(':') + ": ")
+                        pop()
+                        append(block.text.substringAfter(':').trimStart())
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface)
+                "code" -> Surface(shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.surface) {
+                    Text(block.text, modifier = Modifier.padding(8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface)
+                }
+                else -> Text(block.text, style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface)
             }
         }
     }
@@ -875,32 +1077,69 @@ private data class ParsedToolResult(
 private fun parseToolResult(toolResult: ToolResult): ParsedToolResult {
     return runCatching {
         val root = toolResultJson.parseToJsonElement(toolResult.content).jsonObject
-        val success = root["success"]?.jsonPrimitive?.booleanOrNull ?: toolResult.success
-        val action = root["action"]?.jsonPrimitive?.contentOrNull
-            ?.replace('_', ' ')
-            ?.lowercase()
-            ?.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-            ?: if (success) "Command Executed" else "Command Failed"
+        val success = (root["success"]?.jsonPrimitive?.booleanOrNull ?: toolResult.success) && toolResult.success
+        val requiresApproval = root["requires_confirmation"]?.jsonPrimitive?.booleanOrNull == true
+        val action = (root["action"]?.jsonPrimitive?.contentOrNull ?: "Command")
+            .take(64)
+            .replace('_', ' ')
+            .lowercase()
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
         val error = root["error"]?.jsonPrimitive?.contentOrNull.orEmpty()
-        val data = root["data"]?.jsonObject
+        val data = root["data"] as? JsonObject
         val message = data?.get("message")?.jsonPrimitive?.contentOrNull
         val content = data?.get("content")?.jsonPrimitive?.contentOrNull
+        val entries = data?.get("entries") as? JsonArray
+        val device = data?.get("device_info") as? JsonObject
+        val storage = data?.get("storage_info") as? JsonObject
+        val truncated = root["truncated"]?.jsonPrimitive?.booleanOrNull == true
+        val total = root["total_entries"]?.jsonPrimitive?.intOrNull ?: entries?.size ?: 0
         val detail = when {
             error.isNotBlank() -> error
-            !message.isNullOrBlank() -> message
-            !content.isNullOrBlank() -> content.lineSequence().firstOrNull().orEmpty()
-            else -> toolResult.content.take(120)
+            requiresApproval -> "Waiting for your approval before execution"
+            !message.isNullOrBlank() -> message.take(120)
+            entries != null -> {
+                val names = entries.take(3).mapNotNull { item ->
+                    (item as? JsonObject)?.get("name")?.jsonPrimitive?.contentOrNull?.take(60)
+                }
+                val sample = names.joinToString(", ")
+                val remaining = (total - names.size).coerceAtLeast(0)
+                buildString {
+                    if (truncated) append("Preview: ")
+                    append("$total entries")
+                    if (sample.isNotEmpty()) append(" · $sample")
+                    if (remaining > 0) append(" · +$remaining more")
+                }
+            }
+            device != null -> listOfNotNull(
+                device["name"]?.jsonPrimitive?.contentOrNull?.let { "Device: ${it.take(60)}" },
+                device["firmware_version"]?.jsonPrimitive?.contentOrNull?.let { "Firmware: ${it.take(60)}" },
+                device["battery_level"]?.jsonPrimitive?.intOrNull?.let { "Battery: $it%" }
+            ).joinToString(" · ").ifBlank { "Device details available" }
+            storage != null -> listOfNotNull(
+                storage["has_sd_card"]?.jsonPrimitive?.booleanOrNull?.let {
+                    if (it) "SD card present" else "No SD card reported"
+                },
+                storage["external_free"]?.jsonPrimitive?.contentOrNull?.let { "External free: $it bytes" },
+                storage["internal_free"]?.jsonPrimitive?.contentOrNull?.let { "Internal free: $it bytes" }
+            ).joinToString(" · ").ifBlank { "Storage details available" }
+            !content.isNullOrBlank() -> content.lineSequence().firstOrNull().orEmpty().take(120)
+            success -> "Completed"
+            else -> "No error detail supplied; expand for raw result"
         }
         ParsedToolResult(
-            success = success,
-            title = action,
+            success = success && !requiresApproval,
+            title = when {
+                requiresApproval -> "Approval required: $action"
+                success -> "Succeeded: $action"
+                else -> "Failed: $action"
+            },
             detail = detail
         )
     }.getOrElse {
         ParsedToolResult(
             success = toolResult.success,
-            title = if (toolResult.success) "Command Executed" else "Command Failed",
-            detail = toolResult.content.take(120)
+            title = if (toolResult.success) "Succeeded: Command" else "Failed: Command",
+            detail = if (toolResult.success) toolResult.content.take(120) else toolResult.content
         )
     }
 }

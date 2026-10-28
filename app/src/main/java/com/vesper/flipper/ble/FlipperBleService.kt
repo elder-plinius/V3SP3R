@@ -23,6 +23,8 @@ import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.util.size
 import com.hoho.android.usbserial.driver.CdcAcmSerialDriver
 import com.hoho.android.usbserial.driver.ProbeTable
 import com.hoho.android.usbserial.driver.UsbSerialDriver
@@ -62,6 +64,8 @@ class FlipperBleService : Service() {
     private var bleKeepaliveJob: Job? = null
     private var usbReceiverRegistered = false
     private var broadScanStarted = false
+    @Volatile
+    private var foregroundActive = false
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -172,33 +176,44 @@ class FlipperBleService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START_FOREGROUND -> startForegroundService()
-            ACTION_STOP -> {
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            else -> {
-                // START_STICKY restarts with a null intent after the system kills the
-                // service. We must call startForeground() promptly or Android 12+ will
-                // throw ForegroundServiceDidNotStartInTimeException and crash the app.
-                startForegroundService()
-            }
+        // A sticky restart or accepted start can arrive after permissions change.
+        // Let the guarded platform promotion handle rejection, then stop non-sticky.
+        if (intent?.action == ACTION_STOP || !startForegroundService()) {
+            stopForegroundService()
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stopForegroundService()
         unregisterUsbReceivers()
+        try {
+            stopScan()
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked during scan cleanup", e)
+        }
         disconnect()
         serviceScope.cancel()
     }
 
     private fun initializeBluetooth() {
-        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        bluetoothAdapter = bluetoothManager.adapter
-        bleScanner = bluetoothAdapter?.bluetoothLeScanner
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        bluetoothAdapter = bluetoothManager?.adapter
+        // Binding is also the entry point for USB permission requests. It must
+        // not require Bluetooth consent, including on a denied sticky restart.
+        bleScanner = if (hasBluetoothPermissions()) {
+            try {
+                bluetoothAdapter?.bluetoothLeScanner
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Bluetooth permission changed while initializing scanner", e)
+                null
+            }
+        } else {
+            null
+        }
     }
 
     private fun initializeUsb() {
@@ -227,9 +242,33 @@ class FlipperBleService : Service() {
         usbReceiverRegistered = false
     }
 
-    private fun startForegroundService() {
-        val notification = createNotification()
-        startForeground(NOTIFICATION_ID, notification)
+    private fun startForegroundService(): Boolean {
+        return try {
+            // Do not recheck local eligibility here: an accepted foreground start
+            // must reach Android to clear its pending start watchdog, even when
+            // connectedDevice permission validation then rejects the promotion.
+            // stopSelf alone cannot clear that obligation while a binding remains.
+            startForeground(NOTIFICATION_ID, createNotification())
+            foregroundActive = true
+            true
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Foreground promotion denied; transport permission may have been revoked", e)
+            false
+        } catch (e: IllegalStateException) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                e is android.app.ForegroundServiceStartNotAllowedException
+            ) {
+                Log.w(TAG, "Foreground promotion not allowed while app is in background", e)
+                false
+            } else {
+                throw e
+            }
+        }
+    }
+
+    private fun stopForegroundService() {
+        foregroundActive = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     private fun createNotification(): Notification {
@@ -260,6 +299,7 @@ class FlipperBleService : Service() {
     }
 
     private fun updateNotification() {
+        if (!foregroundActive) return
         val notification = createNotification()
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         notificationManager.notify(NOTIFICATION_ID, notification)
@@ -274,6 +314,9 @@ class FlipperBleService : Service() {
             return
         }
 
+        // A bound USB-capable service may have been created before Bluetooth
+        // consent, or while the adapter was off. Acquire the scanner on retry.
+        initializeBluetooth()
         if (bluetoothAdapter?.isEnabled != true) {
             _connectionState.value = ConnectionState.Error("Bluetooth is disabled")
             return
@@ -722,20 +765,26 @@ class FlipperBleService : Service() {
     }
 
     private suspend fun ensureUsbPermission(manager: UsbManager, device: UsbDevice): Boolean {
-        if (manager.hasPermission(device)) return true
-        val pendingIntent = PendingIntent.getBroadcast(
-            this,
-            0,
-            Intent(ACTION_USB_PERMISSION).setPackage(packageName),
-            usbPermissionPendingIntentFlags()
-        )
-        val deferred = CompletableDeferred<Boolean>()
-        pendingUsbPermissionRequest?.cancel()
-        pendingUsbPermissionRequest = deferred
-        manager.requestPermission(device, pendingIntent)
-        return withTimeoutOrNull(USB_PERMISSION_TIMEOUT_MS) {
-            deferred.await()
-        } ?: false
+        if (!manager.hasPermission(device)) {
+            val pendingIntent = PendingIntent.getBroadcast(
+                this,
+                0,
+                Intent(ACTION_USB_PERMISSION).setPackage(packageName),
+                usbPermissionPendingIntentFlags()
+            )
+            val deferred = CompletableDeferred<Boolean>()
+            pendingUsbPermissionRequest?.cancel()
+            pendingUsbPermissionRequest = deferred
+            manager.requestPermission(device, pendingIntent)
+            val granted = withTimeoutOrNull(USB_PERMISSION_TIMEOUT_MS) {
+                deferred.await()
+            } ?: false
+            if (!granted) return false
+        }
+        // USB-only users can bind before granting device access. Once access is
+        // granted, retry the guarded foreground dispatch without Bluetooth consent.
+        startService(this)
+        return true
     }
 
     private fun usbPermissionPendingIntentFlags(): Int {
@@ -2296,7 +2345,7 @@ class FlipperBleService : Service() {
     private fun hasLikelyFlipperManufacturerData(result: ScanResult): Boolean {
         val record = result.scanRecord ?: return false
         val manufacturerData = record.manufacturerSpecificData ?: return false
-        for (index in 0 until manufacturerData.size()) {
+        for (index in 0 until manufacturerData.size) {
             val manufacturerId = manufacturerData.keyAt(index)
             if (manufacturerId in KNOWN_FLIPPER_BLE_MANUFACTURER_IDS) {
                 return true
@@ -2396,7 +2445,9 @@ class FlipperBleService : Service() {
         val existing = prefs.getStringSet(KEY_CONFIRMED_FLIPPER_ADDRESSES, emptySet()).orEmpty()
         if (normalized in existing) return
         val updated = existing.toMutableSet().apply { add(normalized) }
-        prefs.edit().putStringSet(KEY_CONFIRMED_FLIPPER_ADDRESSES, updated).apply()
+        prefs.edit(commit = false) {
+            putStringSet(KEY_CONFIRMED_FLIPPER_ADDRESSES, updated)
+        }
     }
 
     private fun Intent.extractUsbDeviceExtra(): UsbDevice? {
@@ -2500,14 +2551,36 @@ class FlipperBleService : Service() {
         private val KNOWN_FLIPPER_USB_VENDOR_IDS = setOf(0x0483)
         private val KNOWN_FLIPPER_USB_PRODUCT_IDS = setOf(0x5740, 0x5741)
 
-        fun startService(context: Context) {
-            val intent = Intent(context, FlipperBleService::class.java).apply {
-                action = ACTION_START_FOREGROUND
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        /** Only transport grants qualify; location/notification consent is unrelated. */
+        private fun canStartForeground(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+            ) return true
+            val manager = context.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return false
+            return manager.deviceList.values.any { manager.hasPermission(it) }
+        }
+
+        fun startService(context: Context): Boolean {
+            return try {
+                if (!canStartForeground(context)) return false
+                val intent = Intent(context, FlipperBleService::class.java).apply {
+                    action = ACTION_START_FOREGROUND
+                }
                 context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+                true
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Foreground start denied; transport permission may have been revoked", e)
+                false
+            } catch (e: IllegalStateException) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    e is android.app.ForegroundServiceStartNotAllowedException
+                ) {
+                    Log.w(TAG, "Foreground start not allowed while app is in background", e)
+                    false
+                } else {
+                    throw e
+                }
             }
         }
 

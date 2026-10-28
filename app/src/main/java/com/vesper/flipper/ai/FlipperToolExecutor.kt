@@ -3,6 +3,7 @@ package com.vesper.flipper.ai
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.core.net.toUri
 import com.vesper.flipper.ble.BleServiceManager
 import com.vesper.flipper.ble.FlipperFileSystem
 import com.vesper.flipper.domain.model.PayloadType
@@ -257,7 +258,7 @@ class FlipperToolExecutor @Inject constructor(
      */
     fun createWebSearchIntent(query: String): Intent {
         val encodedQuery = Uri.encode(query)
-        return Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=$encodedQuery"))
+        return Intent(Intent.ACTION_VIEW, "https://www.google.com/search?q=$encodedQuery".toUri())
     }
 
     /**

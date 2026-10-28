@@ -1,0 +1,85 @@
+name: Provider and updater APK build
+
+on:
+  push:
+    branches:
+      - 'build/providers-updater-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    if: github.repository == 'psigho/V3SP3R'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out the exact build commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Install required Android SDK packages
+        shell: bash
+        run: |
+          python -c 'import os, subprocess; sdk=os.path.join(os.environ["ANDROID_HOME"], "cmdline-tools/latest/bin/sdkmanager"); subprocess.run([sdk, "--licenses"], input="y\n"*100, text=True, check=True); subprocess.run([sdk, "platforms;android-35", "build-tools;36.0.0"], input="y\n"*100, text=True, check=True)'
+
+      # Upstream main still tracks a developer-specific SDK path; PR #82 removes it.
+      - name: Prefer runner Android SDK over tracked local.properties
+        shell: bash
+        run: rm -f local.properties
+
+      - name: Run unit tests, lint and build
+        shell: bash
+        run: |
+          java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --continue --console=plain --max-workers=2
+
+      - name: Run BLE lifecycle component regressions
+        shell: bash
+        env:
+          VESPER_TEST_TMP: ${{ runner.temp }}/vesper-lifecycle-tests
+        run: |
+          python app/src/test/java/com/vesper/flipper/ble/run_lifecycle_tests.py
+
+      - name: Record source revision
+        if: success()
+        shell: bash
+        run: |
+          python -c 'import pathlib, subprocess; pathlib.Path("build-source-commit.txt").write_text(subprocess.check_output(["git", "rev-parse", "HEAD"], text=True), encoding="utf-8")'
+
+      - name: Upload APK for local signing
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vesper-ci-apk-local-signing-required
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/debug/output-metadata.json
+            build-source-commit.txt
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vesper-verification-reports
+          path: |
+            app/build/test-results/testDebugUnitTest/*.xml
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+          retention-days: 3

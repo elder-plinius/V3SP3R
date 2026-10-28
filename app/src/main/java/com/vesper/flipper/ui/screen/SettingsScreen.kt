@@ -31,7 +31,6 @@ fun SettingsScreen(
     val state by viewModel.state.collectAsState()
     val availableModels by viewModel.availableModels.collectAsState()
     val isRefreshingModels by viewModel.isRefreshingModels.collectAsState()
-    var showApiKey by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -55,116 +54,17 @@ fun SettingsScreen(
             // API Configuration Section
             item {
                 SettingsSection(title = "API Configuration") {
-                    // API Key
-                    OutlinedTextField(
-                        value = state.apiKey,
-                        onValueChange = { viewModel.setApiKey(it) },
-                        label = { Text("OpenRouter API Key") },
-                        modifier = Modifier.fillMaxWidth(),
-                        visualTransformation = if (showApiKey) {
-                            VisualTransformation.None
-                        } else {
-                            PasswordVisualTransformation()
-                        },
-                        trailingIcon = {
-                            IconButton(onClick = { showApiKey = !showApiKey }) {
-                                Icon(
-                                    if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = if (showApiKey) "Hide" else "Show"
-                                )
-                            }
-                        },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp)
+                    ProviderConfiguration(
+                        state = state,
+                        models = availableModels,
+                        refreshing = isRefreshingModels,
+                        onProvider = viewModel::setProvider,
+                        onSave = viewModel::saveProviderSettings,
+                        onSaveKey = viewModel::saveApiKey,
+                        onDraftEdited = viewModel::providerDraftEdited,
+                        onRefresh = viewModel::refreshAvailableModels,
+                        onTest = viewModel::testProviderConnection
                     )
-                    Text(
-                        text = "Paste your OpenRouter key here (starts with \"sk-or-\").",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Model Selection
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "AI Model",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        TextButton(
-                            onClick = { viewModel.refreshAvailableModels() },
-                            enabled = !isRefreshingModels
-                        ) {
-                            if (isRefreshingModels) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Refreshing")
-                            } else {
-                                Icon(Icons.Default.Refresh, contentDescription = null)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Refresh")
-                            }
-                        }
-                    }
-                    Text(
-                        text = "Tool calls auto-fallback across multiple models; if it still fails, pick a different model and retry.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    var modelExpanded by remember { mutableStateOf(false) }
-                    ExposedDropdownMenuBox(
-                        expanded = modelExpanded,
-                        onExpandedChange = { modelExpanded = it }
-                    ) {
-                        OutlinedTextField(
-                            value = viewModel.getModelDisplayName(state.selectedModel),
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Model (OpenRouter)") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor(),
-                            trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded)
-                            },
-                            supportingText = { Text(state.selectedModel) },
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        ExposedDropdownMenu(
-                            expanded = modelExpanded,
-                            onDismissRequest = { modelExpanded = false }
-                        ) {
-                            availableModels.forEach { model ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(model.displayName)
-                                            Text(
-                                                model.id,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        viewModel.setSelectedModel(model.id)
-                                        modelExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-
                     Spacer(modifier = Modifier.height(12.dp))
 
                     var iterationsExpanded by remember { mutableStateOf(false) }
@@ -208,6 +108,61 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+
+            // Flipper knowledge is user-authored and separate from provider credentials.
+            item {
+                SettingsSection(title = "Flipper Assist Notes") {
+                    Text(
+                        "Saved notes are sent to the selected AI provider with chat requests. " +
+                            "Do not include API keys, passwords, or other secrets.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    val notesBytes = state.deviceAssistNotesDraft.toByteArray(Charsets.UTF_8).size
+                    val tooLong = notesBytes > SettingsStore.MAX_DEVICE_ASSIST_NOTES_BYTES
+                    OutlinedTextField(
+                        value = state.deviceAssistNotesDraft,
+                        onValueChange = viewModel::editDeviceAssistNotes,
+                        enabled = state.deviceAssistNotesReady && !state.isSavingDeviceAssistNotes,
+                        label = { Text("Device knowledge and firmware notes") },
+                        placeholder = { Text("Add your own verified Flipper details here") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 5,
+                        maxLines = 12,
+                        isError = tooLong,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    Text(
+                        "$notesBytes / ${SettingsStore.MAX_DEVICE_ASSIST_NOTES_BYTES} UTF-8 bytes" +
+                            if (tooLong) " — shorten before saving" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (tooLong) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = viewModel::saveDeviceAssistNotes,
+                            enabled = state.deviceAssistNotesReady && !state.isSavingDeviceAssistNotes &&
+                                !tooLong && state.deviceAssistNotesDraft != state.deviceAssistNotesSaved
+                        ) { Text("Save notes") }
+                        OutlinedButton(
+                            onClick = viewModel::resetDeviceAssistNotes,
+                            enabled = state.deviceAssistNotesReady && !state.isSavingDeviceAssistNotes &&
+                                (state.deviceAssistNotesDraft.isNotEmpty() || state.deviceAssistNotesSaved.isNotEmpty())
+                        ) { Text("Reset notes") }
+                    }
+                    state.deviceAssistNotesMessage?.let { message ->
+                        Text(
+                            message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (state.deviceAssistNotesMessageIsError) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
 
@@ -407,7 +362,7 @@ fun SettingsScreen(
                         onCheckedChange = { viewModel.setTtsEnabled(it) }
                     )
                     Text(
-                        text = "Uses your OpenRouter API key — no extra key needed.",
+                        text = "Voice remains an OpenRouter-only feature and uses your separately saved OpenRouter key, regardless of the selected chat provider.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -588,6 +543,8 @@ fun SettingsScreen(
                         Text("Version")
                         Text(com.vesper.flipper.BuildConfig.VERSION_NAME, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    AppUpdateControls()
                 }
             }
         }

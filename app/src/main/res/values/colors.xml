@@ -2,28 +2,7 @@
 <resources>
     <!-- Vesper Brand Colors — Classy Mythic Cyberpunk Bond -->
     <color name="vesper_primary">#8B2038</color>
-    <color name="vesper_primary_dark">#5E1625</color>
-    <color name="vesper_secondary">#1A1F2E</color>
-    <color name="vesper_accent">#D4AF37</color>
 
     <!-- Surface Colors -->
     <color name="vesper_surface">#0E1118</color>
-    <color name="vesper_surface_variant">#161B28</color>
-    <color name="vesper_background">#060810</color>
-
-    <!-- Text Colors -->
-    <color name="vesper_on_primary">#F5E6EC</color>
-    <color name="vesper_on_surface">#E4E6EE</color>
-    <color name="vesper_on_surface_variant">#8E96AE</color>
-
-    <!-- Risk Colors -->
-    <color name="risk_low">#4CAF7D</color>
-    <color name="risk_medium">#D4AF37</color>
-    <color name="risk_high">#CF4455</color>
-    <color name="risk_blocked">#6B7394</color>
-
-    <!-- Diff Colors -->
-    <color name="diff_added">#3CBF88</color>
-    <color name="diff_removed">#CF4455</color>
-    <color name="diff_changed">#D4AF37</color>
 </resources>

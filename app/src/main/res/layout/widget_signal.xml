@@ -31,7 +31,11 @@
             android:contentDescription="@string/widget_refresh" />
     </LinearLayout>
 
-    <!-- Signal Buttons Grid -->
+    <!-- Signal Buttons Grid
+         Keep the RemoteViews-compatible weighted LinearLayouts: they divide the
+         resizable widget into equal rows and columns. Changing the layout or
+         replacing the custom backgrounds with a borderless button style needs
+         launcher/resize testing, rather than a lint-only visual change. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -53,7 +57,7 @@
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="@string/widget_signal_1"
-                android:textSize="10sp"
+                android:textSize="11sp"
                 android:textColor="#FFFFFF"
                 android:background="@drawable/widget_button_background"
                 android:textAllCaps="false" />
@@ -65,7 +69,7 @@
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="@string/widget_signal_2"
-                android:textSize="10sp"
+                android:textSize="11sp"
                 android:textColor="#FFFFFF"
                 android:background="@drawable/widget_button_background"
                 android:textAllCaps="false" />
@@ -85,7 +89,7 @@
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="@string/widget_signal_3"
-                android:textSize="10sp"
+                android:textSize="11sp"
                 android:textColor="#FFFFFF"
                 android:background="@drawable/widget_button_background"
                 android:textAllCaps="false" />
@@ -97,7 +101,7 @@
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="@string/widget_signal_4"
-                android:textSize="10sp"
+                android:textSize="11sp"
                 android:textColor="#FFFFFF"
                 android:background="@drawable/widget_button_background"
                 android:textAllCaps="false" />
@@ -111,7 +115,7 @@
         android:layout_height="wrap_content"
         android:text="@string/widget_tap_to_trigger"
         android:textColor="#888888"
-        android:textSize="10sp"
+        android:textSize="11sp"
         android:gravity="center"
         android:layout_marginTop="4dp" />
 

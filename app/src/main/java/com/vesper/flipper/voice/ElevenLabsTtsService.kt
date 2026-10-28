@@ -40,6 +40,10 @@ class OpenRouterTtsService @Inject constructor(
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(150, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .retryOnConnectionFailure(false)
         .build()
 
     private val _state = MutableStateFlow<TtsState>(TtsState.Idle)
@@ -57,7 +61,7 @@ class OpenRouterTtsService @Inject constructor(
 
         stop()
 
-        val apiKey = settingsStore.apiKey.first()
+        val apiKey = settingsStore.openRouterApiKey.first()
         if (apiKey.isNullOrBlank()) {
             _state.value = TtsState.Error("OpenRouter API key not configured")
             return
@@ -71,9 +75,11 @@ class OpenRouterTtsService @Inject constructor(
             currentJob = launch(Dispatchers.IO) {
                 try {
                     streamAndPlay(apiKey, voiceId, text)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     if (_state.value !is TtsState.Idle) {
-                        _state.value = TtsState.Error(e.message ?: "TTS playback failed")
+                        _state.value = TtsState.Error("TTS playback failed. Check the OpenRouter key, model access and connection.")
                     }
                 }
             }
@@ -102,7 +108,7 @@ class OpenRouterTtsService @Inject constructor(
      */
     suspend fun isAvailable(): Boolean {
         val enabled = settingsStore.ttsEnabled.first()
-        val apiKey = settingsStore.apiKey.first()
+        val apiKey = settingsStore.openRouterApiKey.first()
         return enabled && !apiKey.isNullOrBlank()
     }
 
@@ -144,8 +150,7 @@ class OpenRouterTtsService @Inject constructor(
         val response = client.newCall(request).execute()
 
         if (!response.isSuccessful) {
-            val body = response.body?.string() ?: "Unknown error"
-            _state.value = TtsState.Error("OpenRouter API error ${response.code}: $body")
+            _state.value = TtsState.Error("OpenRouter API error ${response.code}. Check OpenRouter credentials and audio model access.")
             response.close()
             return
         }

@@ -1,6 +1,8 @@
 package com.vesper.flipper.domain
 
 import com.vesper.flipper.ble.FlipperFileSystem
+import com.vesper.flipper.data.SettingsStore
+import kotlinx.coroutines.flow.MutableStateFlow
 import com.vesper.flipper.domain.executor.CommandExecutor
 import com.vesper.flipper.domain.executor.RiskAssessor
 import com.vesper.flipper.domain.model.AuditActionType
@@ -44,12 +46,17 @@ class CommandExecutorTest {
         permissionService = mock()
         auditService = mock()
         diffService = mock()
+        val settingsStore = mock<SettingsStore>()
+        whenever(settingsStore.autoApproveMedium).thenReturn(MutableStateFlow(false))
+        whenever(settingsStore.autoApproveHigh).thenReturn(MutableStateFlow(false))
         commandExecutor = CommandExecutor(
             fileSystem = fileSystem,
             riskAssessor = riskAssessor,
             permissionService = permissionService,
             auditService = auditService,
-            diffService = diffService
+            diffService = diffService,
+            forgeEngine = mock(),
+            settingsStore = settingsStore
         )
     }
 
@@ -183,7 +190,7 @@ class CommandExecutorTest {
     fun `search resources returns results`() = runBlocking {
         val command = ExecuteCommand(
             action = CommandAction.SEARCH_RESOURCES,
-            args = CommandArgs(command = "infrared", resourceType = "IR_REMOTE"),
+            args = CommandArgs(command = "IRDB", resourceType = "IR_REMOTE"),
             justification = "Find IR remote repos",
             expectedEffect = "Return matching resource repos"
         )

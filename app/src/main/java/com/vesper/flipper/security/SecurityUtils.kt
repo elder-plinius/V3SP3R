@@ -3,6 +3,7 @@ package com.vesper.flipper.security
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.io.File
@@ -174,7 +175,7 @@ class EncryptedStorage(context: Context) {
     )
 
     fun putString(key: String, value: String) {
-        encryptedPrefs.edit().putString(key, value).apply()
+        encryptedPrefs.edit(commit = false) { putString(key, value) }
     }
 
     fun getString(key: String): String? {
@@ -182,11 +183,11 @@ class EncryptedStorage(context: Context) {
     }
 
     fun remove(key: String) {
-        encryptedPrefs.edit().remove(key).apply()
+        encryptedPrefs.edit(commit = false) { remove(key) }
     }
 
     fun clear() {
-        encryptedPrefs.edit().clear().apply()
+        encryptedPrefs.edit(commit = false) { clear() }
     }
 }
 
